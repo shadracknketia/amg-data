@@ -19,4 +19,6 @@ jobs:
             cd ~/amg-data
             git pull origin main
             npm install
-            pm2 restart amg-bot
+            # Try to restart. If it fails (e.g. process not found), it won't stop the Action.
+            pm2 restart amg-bot || pm2 start server.js --name "amg-bot" || true
+            pm2 save
