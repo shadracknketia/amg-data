@@ -343,14 +343,24 @@ app.post('/payment/webhook', async (req, res) => {
 // ==========================================
 
 const client = new Client({
-    authStrategy: new LocalAuth({ clientId: "amg-stable-v1" }),
+    authStrategy: new LocalAuth({ clientId: "amg-bot-live" }),
+    // Force a stable version that works on Linux servers
     webVersionCache: {
         type: 'remote',
-        remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version-checker/master/remote/2.2413.51-v2.html',
+        remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version-checker/master/remote/2.3000.1018903107-alpha.html',
     },
     puppeteer: {
-        headless: true, 
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-accelerated-2d-canvas', '--disable-gpu'],
+        headless: true, // MUST be true on Oracle
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--single-process', // Saves RAM on Oracle's free tier
+            '--disable-gpu'
+        ],
     }
 });
 
