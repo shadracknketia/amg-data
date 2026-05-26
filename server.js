@@ -581,6 +581,7 @@ app.post('/api/admin/update-price', async (req, res) => {
 
 app.get('/api/admin/stats', async (req, res) => {
     try {
+        // 1. Get local sales stats
         const localStats = await db.query(`
             SELECT COALESCE(SUM(amount), 0) as total_sales, COUNT(*) as total_count 
             FROM transactions 
@@ -589,14 +590,27 @@ app.get('/api/admin/stats', async (req, res) => {
 
         let idataBalance = "0.00";
         try {
+            // FIXED: Added a strict 3-second timeout so our API never hangs!
             const providerRes = await axios.get('https://idatagh.com/wp-json/custom/v1/wallet-balance', {
-                headers: { 'Authorization': `Bearer ${process.env.IDATA_API_KEY}`, 'Content-Type': 'application/json' }
+                headers: { 'Authorization': `Bearer ${process.env.IDATA_API_KEY}`, 'Content-Type': 'application/json' },
+                timeout: 3000 // 3 seconds timeout
             });
             idataBalance = providerRes.data.balance;
-        } catch (providerErr) { idataBalance = "Offline"; }
+        } catch (providerErr) { 
+            console.error("⚠️ idata balance timed out or offline:", providerErr.message); 
+            idataBalance = "Offline"; 
+        }
 
-        res.json({ success: true, total_income: localStats.rows[0].total_sales, total_orders: localStats.rows[0].total_count, provider_balance: idataBalance });
-    } catch (err) { res.status(500).json({ error: "Failed to load stats" }); }
+        res.json({ 
+            success: true, 
+            total_income: localStats.rows[0].total_sales, 
+            total_orders: localStats.rows[0].total_count, 
+            provider_balance: idataBalance 
+        });
+    } catch (err) { 
+        console.error("🔴 Stats Error:", err.message);
+        res.status(500).json({ error: "Failed to load stats" }); 
+    }
 });
 
 // --- 🔄 BACKGROUND SYNC (CRON JOB) ---
