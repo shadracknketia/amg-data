@@ -531,7 +531,7 @@ app.get('/api/admin/stats', async (req, res) => {
 });
 
 // --- 🔄 BACKGROUND SYNC (CRON JOB) ---
-cron.schedule('*/5 * * * *', async () => {
+cron.schedule('*/30 * * * *', async () => {
     try {
         const pending = await db.query("SELECT * FROM transactions WHERE status = 'PROCESSING'");
         console.log(`\n🔄 Cron Job: Syncing ${pending.rows.length} pending orders...`);
