@@ -362,6 +362,77 @@ app.post('/payment/webhook', async (req, res) => {
     res.sendStatus(200);
 });
 
+// 8. ADMIN: REPORT A FAILED TRANSACTION
+app.post('/api/report-transaction', async (req, res) => {
+    try {
+        const { transaction_id, phone } = req.body;
+        // Update the status to 'REPORTED'
+        await db.query(
+            "UPDATE transactions SET status = 'REPORTED' WHERE id = $1 AND user_phone = $2", 
+            [transaction_id, phone]
+        );
+        console.log(`⚠️ REPORTED: Transaction ID ${transaction_id} was reported by ${phone}`);
+        res.json({ success: true, message: "Issue reported to Admin." });
+    } catch (err) {
+        res.status(500).json({ error: "Failed to report transaction" });
+    }
+});
+
+// 9. CANCEL / REFUND A TRANSACTION
+app.post('/api/cancel-transaction', async (req, res) => {
+    try {
+        const { transaction_id, phone } = req.body;
+        console.log(`Cancelling transaction: ${transaction_id} for ${phone}`);
+
+        const txRes = await db.query('SELECT * FROM transactions WHERE id = $1 AND user_phone = $2', [transaction_id, phone]);
+        if (txRes.rows.length === 0) return res.status(404).json({ success: false, message: "Not found" });
+        
+        const tx = txRes.rows[0];
+
+        if (tx.status === 'PROCESSING') {
+            await db.query("UPDATE transactions SET status = 'FAILED' WHERE id = $1", [transaction_id]);
+            
+            // Refund if they used App Wallet
+            if (tx.platform === 'APP') {
+                await db.query("UPDATE users SET wallet_balance = wallet_balance + $1 WHERE phone_number = $2", [tx.amount, phone]);
+            }
+            res.json({ success: true, message: "Cancelled." });
+        } else {
+            res.status(400).json({ success: false, message: "Cannot cancel this transaction." });
+        }
+    } catch (err) {
+        res.status(500).json({ error: "Server error" });
+    }
+});
+
+// 10. ADMIN: GET ALL ACTIVE DISPUTES (REPORTED STATUS)
+app.get('/api/admin/disputes', async (req, res) => {
+    try {
+        const disputes = await db.query(
+            "SELECT * FROM transactions WHERE status = 'REPORTED' ORDER BY created_at DESC"
+        );
+        res.json(disputes.rows);
+    } catch (err) {
+        res.status(500).json({ error: "Failed to load disputes" });
+    }
+});
+
+// 11. ADMIN: RESOLVE DISPUTE (MARK AS SUCCESS)
+app.post('/api/admin/resolve-dispute', async (req, res) => {
+    try {
+        const { transaction_id } = req.body;
+        // Update the status back to SUCCESS
+        await db.query(
+            "UPDATE transactions SET status = 'SUCCESS' WHERE id = $1", 
+            [transaction_id]
+        );
+        console.log(`✅ DISPUTE RESOLVED: Transaction ID ${transaction_id} marked as SUCCESS.`);
+        res.json({ success: true, message: "Dispute marked as resolved." });
+    } catch (err) {
+        res.status(500).json({ error: "Failed to resolve dispute" });
+    }
+});
+
 // ==========================================
 //        4. WHATSAPP BOT LOGIC
 // ==========================================
