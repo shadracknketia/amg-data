@@ -265,7 +265,7 @@ app.post('/api/purchase-wallet', async (req, res) => {
 
 app.post('/api/purchase-direct', async (req, res) => {
     try {
-        const { payer, recipient, plan_id, network, method } = req.body; // NEW: Added 'method'
+        const { payer, recipient, plan_id, network, method } = req.body;
         
         const planRes = await db.query('SELECT * FROM data_plans WHERE idata_plan_id = $1', [plan_id]);
         if (planRes.rows.length === 0) return res.status(404).json({ success: false, message: "Plan not found" });
@@ -280,24 +280,24 @@ app.post('/api/purchase-direct', async (req, res) => {
         };
 
         let checkoutUrl = null;
-        let paystackReference = 'DIRECT_BUY';
+        let paystackReference = '';
 
         if (method === 'MOMO_WEB') {
-            // MODE A: Directly initialize a web transaction
+            // MODE A: Initialize a web transaction & get its reference
             const payment = await startPaystackPayment('customer@amgdata.com', plan.selling_price, metadata);
             checkoutUrl = payment && payment.status ? payment.data.authorization_url : null;
             paystackReference = payment && payment.status ? payment.data.reference : 'WEB_BUY';
         } else {
-            // MODE B: Force the STK Push prompt on their phone
+            // MODE B: Trigger direct STK Push & get its unique charge reference
             const charge = await chargeMoMoDirect(payer, plan.selling_price, network, metadata);
             paystackReference = charge && charge.status ? charge.data.reference : 'PROMPT_BUY';
             checkoutUrl = charge && charge.status ? charge.data.authorization_url : null;
         }
 
-        // Save transaction as PROCESSING with the respective details
+        // --- 🧾 FIXED: WE NOW SAVE THE CORRECT MATCHING REFERENCE ---
         await db.query(
             'INSERT INTO transactions (user_phone, amount, network, data_volume, status, platform, reference, checkout_url, plan_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
-            [payer, plan.selling_price, plan.network_name, plan.plan_name, 'PROCESSING', 'MOMO', paystackReference, checkoutUrl, plan['id']]
+            [payer, plan.selling_price, plan.network_name, plan.plan_name, 'PROCESSING', 'MOMO', paystackReference, checkoutUrl, plan_id]
         );
 
         res.json({ 
