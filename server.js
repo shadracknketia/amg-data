@@ -346,18 +346,16 @@ app.post('/payment/webhook', async (req, res) => {
             const result = await sendDataRoundRobin(metadata.network_id.toLowerCase(), phone, metadata.plan_id);
             
             if (result.success) {
-                // --- 🧾 NEW: SAVE WITH 'PROCESSING' STATUS AND STORE THE IDATA ORDER_ID ---
+                // --- 🧾 FIXED: UPDATE THE EXISTING ROW INSTEAD OF INSERTING A NEW ONE ---
                 await db.query(
-                    'INSERT INTO transactions (user_phone, amount, network, data_volume, status, reference, platform, provider, provider_order_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
-                    [phone, amountPaid, metadata.network_id.toUpperCase(), 'DIRECT BUY', 'PROCESSING', reference, 'MOMO', result.provider, result.order_id]
+                    'UPDATE transactions SET status = $1, provider = $2, provider_order_id = $3 WHERE reference = $4',
+                    ['SUCCESS', result.provider, result.order_id, reference]
                 );
-                console.log(`✅ Order received by ${result.provider}. Saved as PROCESSING with Order ID: ${result.order_id}`);
+                console.log(`✅ Webhook: Updated Transaction Reference ${reference} to SUCCESS!`);
             } else {
-                console.log("❌ Data delivery failed. Logged as FAILED.");
-                await db.query(
-                    'INSERT INTO transactions (user_phone, amount, network, data_volume, status, reference, platform) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-                    [phone, amountPaid, metadata.network_id.toUpperCase(), 'DIRECT BUY', 'FAILED', reference, 'MOMO']
-                );
+                console.log("❌ Data delivery failed. Updating status to FAILED.");
+                // Update the existing row to FAILED
+                await db.query('UPDATE transactions SET status = $1 WHERE reference = $2', ['FAILED', reference]);
             }
         }
     }
