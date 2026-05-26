@@ -64,7 +64,10 @@ async function getOrCreateUser(phone) {
 
 const startPaystackPayment = async (email, amount, metadata) => {
     try {
-        let phone = metadata.payer_phone;
+        // Use payer_phone if available, otherwise use customer_phone
+        let phoneToClean = metadata.payer_phone || metadata.customer_phone || "";
+        
+        let phone = phoneToClean.trim();
         if (phone.startsWith('0')) phone = '233' + phone.slice(1);
 
         const response = await axios.post('https://api.paystack.co/transaction/initialize', {
@@ -72,7 +75,7 @@ const startPaystackPayment = async (email, amount, metadata) => {
             amount: Math.round(amount * 100),
             currency: "GHS",
             metadata: metadata,
-            channels: ['mobile_money', 'mtn_mobile_money', 'vodafone_mobile_money', 'airteltigo_mobile_money']
+            channels: ['mobile_money', 'card'] 
         }, {
             headers: { 
                 Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
@@ -81,7 +84,7 @@ const startPaystackPayment = async (email, amount, metadata) => {
         });
         return response.data;
     } catch (err) {
-        console.error("Paystack Error:", err.response?.data?.message);
+        console.error("🔴 Paystack Init Error:", err.response?.data || err.message);
         return null;
     }
 };
@@ -191,10 +194,33 @@ app.get('/api/history/:phone', async (req, res) => {
 
 app.post('/api/topup', async (req, res) => {
     try {
-        const { phone, amount } = req.body;
-        const payment = await startPaystackPayment('customer@amgdata.com', amount, { type: 'WALLET_TOPUP', customer_phone: phone });
-        if (payment && payment.status) res.json({ success: true, checkout_url: payment.data.authorization_url });
-        else res.status(400).json({ success: false, message: "Payment init failed" });
+        const { phone, amount, method } = req.body;
+
+        const metadata = { type: 'WALLET_TOPUP', customer_phone: phone };
+
+        let checkoutUrl = null;
+        let reference = 'TOPUP_INIT';
+
+        if (method === 'MOMO_WEB') {
+            const payment = await startPaystackPayment('customer@amgdata.com', amount, metadata);
+            checkoutUrl = payment?.data?.authorization_url;
+            reference = payment?.data?.reference;
+        } else {
+            const charge = await chargeMoMoDirect(phone, amount, 'mtn', metadata);
+            checkoutUrl = charge?.data?.authorization_url;
+            reference = charge?.data?.reference;
+        }
+
+        if (reference) {
+            // Log the top-up attempt in transactions
+            await db.query(
+                'INSERT INTO transactions (user_phone, amount, network, data_volume, status, platform, reference, checkout_url) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+                [phone, amount, 'WALLET', 'DEPOSIT', 'PROCESSING', 'MOMO', reference, checkoutUrl]
+            );
+            res.json({ success: true, checkout_url: checkoutUrl });
+        } else {
+            res.status(400).json({ success: false, message: "Payment failed to start" });
+        }
     } catch (err) { res.status(500).json({ error: "Server error" }); }
 });
 

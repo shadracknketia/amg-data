@@ -17,8 +17,11 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd ~/amg-data
-            git pull origin main
+            # Force the server to match GitHub exactly
+            git fetch --all
+            git reset --hard origin/main
+            
             npm install
-            # Try to restart. If it fails (e.g. process not found), it won't stop the Action.
+            # Restart the bot and the API
             pm2 restart amg-bot || pm2 start server.js --name "amg-bot" || true
             pm2 save
