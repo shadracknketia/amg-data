@@ -17,11 +17,14 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd ~/amg-data
-            # Force the server to match GitHub exactly
             git fetch --all
             git reset --hard origin/main
-            
             npm install
-            # Restart the bot and the API
-            pm2 restart amg-bot || pm2 start server.js --name "amg-bot" || true
+            
+            # Restart the API Server [1]
+            pm2 restart amg-api || pm2 start server.js --name "amg-api"
+            
+            # Restart the WhatsApp Bot [1]
+            pm2 restart amg-bot || pm2 start bot.js --name "amg-bot"
+            
             pm2 save
