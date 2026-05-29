@@ -15,11 +15,12 @@ jobs:
           host: ${{ secrets.SERVER_IP }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          timeout: 20m
           script: |
             cd ~/amg-data
             git fetch --all
             git reset --hard origin/main
-            npm install
+            npm install --no-audit --no-fund
             
             # Restart the API Server [1]
             pm2 restart amg-api || pm2 start server.js --name "amg-api"

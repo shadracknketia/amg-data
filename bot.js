@@ -126,12 +126,13 @@ client.on('message', async (msg) => {
             return client.sendMessage(sender, planMenu + `\n*0. Back*`);
             
         } else if (userMessage === '2') {
-            // Check if the user is registered in our database
+            // Check if this WhatsApp number actually exists in our Supabase database [1]
             const userRes = await db.query('SELECT * FROM users WHERE phone_number = $1', [formattedSender]);
             
             if (userRes.rows.length === 0 || !userRes.rows[0].pin) {
+                // If they are not registered, block them from checking balance [1]
                 delete userStates[sender];
-                return client.sendMessage(sender, `❌ *No Wallet Found*\n\nThis phone number (${formattedSender}) is not registered. Please download our Mobile App to create an account and fund your wallet.\n\n*0. Menu*`);
+                return client.sendMessage(sender, `❌ *No Wallet Found*\n\nThis phone number (${formattedSender}) is not registered on our platform.\n\nPlease download our *Mobile App* to create an account and fund your wallet.\n\n*0. Menu*`);
             }
             
             const user = userRes.rows[0];
@@ -165,7 +166,7 @@ client.on('message', async (msg) => {
         const plans = await db.query('SELECT * FROM data_plans WHERE is_active = true');
         if (plans.rows[choice]) {
             userStates[sender] = { step: 'ENTERING_RECIPIENT', plan: plans.rows[choice] };
-            // FIXED: Bracket now correctly displays your clean 10-digit number! [1]
+            // FIXED: Changed ${senderClean} to ${formattedSender}
             return client.sendMessage(sender, `✅ Selected: *${plans.rows[choice].plan_name}*\n\nWhich number should *RECEIVE* the data?\n\n*1.* My number (${formattedSender})\n*OR* Type the 10-digit number:`);
         } else {
             return client.sendMessage(sender, "❌ Invalid choice. Please select a number from the menu above.");
