@@ -11,6 +11,43 @@ const { sendDataRoundRobin } = require('./providers'); // Shares our rotating pr
 const db = new Pool({ connectionString: process.env.DATABASE_URL });
 const userStates = {}; 
 
+// --- 🛡️ THE BULLETPROOF LID-TO-PHONE RESOLVER & CACHE ---
+const lidCache = {}; // Stores mapped LIDs (e.g. "202018...@lid": "0241963319")
+
+async function resolveJidToPhone(sender) {
+    // 1. Check local cache first (Instant & completely safe!)
+    if (lidCache[sender]) {
+        return lidCache[sender];
+    }
+
+    let rawId = sender.split('@')[0];
+
+    // 2. If it's a hidden WhatsApp LID, ask the system to translate it
+    if (sender.endsWith('@lid')) {
+        try {
+            console.log(`🔍 Translating hidden ID ${sender} to real phone number...`);
+            const resolved = await client.getContactLidAndPhone([sender]); // Library's official translator!
+            
+            if (resolved && resolved.length > 0 && resolved[0].pn) {
+                rawId = resolved[0].pn.split('@')[0]; // Extracted JID (e.g., 233241963319)
+                console.log(`✅ Successfully translated to: ${rawId}`);
+            }
+        } catch (err) {
+            console.error("🔴 Failed to translate hidden ID:", err.message);
+        }
+    }
+
+    // 3. Format to standard 10-digit Ghana format (024...)
+    let cleanPhone = rawId.trim();
+    if (cleanPhone.startsWith('233')) {
+        cleanPhone = '0' + cleanPhone.slice(3);
+    }
+
+    // 4. Save to cache so we never have to run this API call for this user again
+    lidCache[sender] = cleanPhone;
+    return cleanPhone;
+}
+
 // --- DATABASE HELPER ---
 async function getOrCreateUser(phone) {
     let cleanPhone = phone.trim();
@@ -97,17 +134,10 @@ client.on('ready', () => console.log('✅ AMG Bot is online and stable!'));
 client.on('message', async (msg) => {
     const userMessage = msg.body.trim();
     const sender = msg.from;
-    
-    // --- 🛡️ THE LID-TO-JID SECURITY PATCH ---
-    // Fetch the real contact profile to bypass WhatsApp's hidden companion IDs [1.1.2, 1.1.5]
-    const contact = await msg.getContact();
-    const senderClean = contact.number; // This is GUARANTEED to be their real phone number! [1.1.2, 1.1.5]
 
-    // Format their WhatsApp ID into a standard 10-digit Ghana format (e.g. 024XXXXXXX)
-    let formattedSender = senderClean;
-    if (formattedSender.startsWith('233')) {
-        formattedSender = '0' + formattedSender.slice(3);
-    }
+    // --- 🛡️ RESOLVE REAL PHONE NUMBER ---
+    // This is guaranteed to bypass WhatsApp's hidden IDs safely!
+    const formattedSender = await resolveJidToPhone(sender); 
 
     // GLOBAL RESET: Press 0 at any point to start over
     if (userMessage === '0' || userMessage.toLowerCase() === 'reset' || userMessage.toLowerCase() === 'menu') {
