@@ -461,18 +461,115 @@ app.post('/api/admin/resolve-dispute', async (req, res) => {
     }
 });
 
-// 13. CUSTOM MARKETING REDIRECTOR (LAUNCHES WHATSAPP CHAT)
+// ==========================================
+//    13. BRANDED WHATSAPP BOT LANDING PAGE
+// ==========================================
 app.get('/chat', (req, res) => {
     // Replace this with your exact live WhatsApp Bot number (must start with 233 and have NO '+')
-    const botNumber = "233241963319"; 
+    const botNumber = "233539743087"; 
     
     // Pre-fill the word 'Hi' so the user only has to click send [1]
     const prefilledMessage = encodeURIComponent("Hi"); 
+    const whatsappUrl = `https://wa.me/${botNumber}?text=${prefilledMessage}`;
     
-    console.log(`📣 Marketing Link Clicked! Redirecting user to WhatsApp Chat...`);
-    
-    // Redirect the browser straight into WhatsApp [1]
-    res.redirect(`https://wa.me/${botNumber}?text=${prefilledMessage}`);
+    console.log(`📣 Marketing Link Clicked! Displaying WhatsApp Bot Landing Page...`);
+
+    // Return a beautiful, responsive marketing landing page [1]
+    res.send(`
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>AMG Affordable Data - WhatsApp Bot</title>
+            <style>
+                body {
+                    margin: 0; padding: 0;
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                    background-color: #f8f9fa;
+                    display: flex; justify-content: center; align-items: center;
+                    height: 100vh;
+                }
+                .card {
+                    background: white;
+                    padding: 40px 30px;
+                    border-radius: 24px;
+                    box-shadow: 0 10px 30px rgba(0,0,0,0.04);
+                    text-align: center;
+                    max-width: 330px;
+                    width: 100%;
+                    border: 1.5px solid #ffe8cc;
+                }
+                .logo {
+                    font-size: 60px;
+                    color: orange;
+                    margin-bottom: 20px;
+                    animation: pulse 1.2s infinite ease-in-out;
+                }
+                h2 {
+                    margin: 0 0 10px 0;
+                    color: #212529;
+                    font-size: 24px;
+                    font-weight: 800;
+                }
+                p {
+                    color: #6c757d;
+                    font-size: 14px;
+                    margin-bottom: 30px;
+                    line-height: 1.6;
+                }
+                .btn {
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    width: 100%;
+                    height: 55px;
+                    background-color: #25D366; /* Official WhatsApp Green */
+                    color: white;
+                    text-decoration: none;
+                    border-radius: 15px;
+                    font-weight: bold;
+                    font-size: 16px;
+                    box-shadow: 0 8px 20px rgba(37, 211, 102, 0.3);
+                    transition: all 0.2s ease;
+                }
+                .btn:active {
+                    transform: scale(0.98);
+                    box-shadow: 0 4px 10px rgba(37, 211, 102, 0.2);
+                }
+                .loader-text {
+                    font-size: 12px;
+                    color: #adb5bd;
+                    margin-top: 20px;
+                }
+                @keyframes pulse {
+                    0% { transform: scale(0.9); opacity: 0.8; }
+                    50% { transform: scale(1.05); opacity: 1; }
+                    100% { transform: scale(0.9); opacity: 0.8; }
+                }
+            </style>
+            <script>
+                // Automatically open WhatsApp after 2 seconds [1]
+                setTimeout(function() {
+                    window.location.href = "${whatsappUrl}";
+                }, 2000);
+            </script>
+        </head>
+        <body>
+            <div class="card">
+                <div class="logo">⚡</div>
+                <h2>AMG Affordable Data</h2>
+                <p>We are opening WhatsApp to start your automated data purchase.<br><br><strong>Tip:</strong> Simply tap <strong>"Send"</strong> on the pre-filled message "Hi" when your chat opens! [1]</p>
+                
+                <a href="${whatsappUrl}" class="btn">
+                    🟢 OPEN WHATSAPP CHAT
+                </a>
+                
+                <div class="loader-text">Redirecting automatically in 2s...</div>
+            </div>
+        </body>
+        </html>
+    `);
 });
 
 // ==========================================
