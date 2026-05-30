@@ -1,31 +1,33 @@
-name: Auto Deploy to Oracle
+name: Auto Deploy to Contabo
 
 on:
   push:
     branches:
-      - main  # This script runs whenever you push to the 'main' branch
+      - main  # Runs whenever you push to main branch
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy to Oracle Server
+      - name: Deploy to Contabo Server
         uses: appleboy/ssh-action@master
         with:
           host: ${{ secrets.SERVER_IP }}
           username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          password: ${{ secrets.SERVER_PASSWORD }} # FIXED: Uses your Contabo Password! [1]
           timeout: 20m
           script: |
-            cd ~/amg-data
+            # 1. Move into the Contabo root folder
+            cd /root/amg-data
+            
+            # 2. Force the server to pull the new code [1]
             git fetch --all
             git reset --hard origin/main
+            
+            # 3. Install packages [1]
             npm install --no-audit --no-fund
             
-            # Restart the API Server [1]
+            # 4. Restart both processes in the root user's PM2 list [1]
             pm2 restart amg-api || pm2 start server.js --name "amg-api"
-            
-            # Restart the WhatsApp Bot [1]
             pm2 restart amg-bot || pm2 start bot.js --name "amg-bot"
-            
             pm2 save
