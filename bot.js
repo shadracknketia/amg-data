@@ -15,35 +15,42 @@ const userStates = {};
 const lidCache = {}; // Stores mapped LIDs (e.g. "202018...@lid": "0241963319")
 
 async function resolveJidToPhone(sender) {
-    // 1. Check local cache first (Instant & completely safe!)
+    console.log(`\n=== 🔍 RESOLVING JID: ${sender} ===`);
+    
+    // Check local cache
     if (lidCache[sender]) {
+        console.log(`⚡ Cache Hit: Found saved mapping -> ${lidCache[sender]}`);
         return lidCache[sender];
     }
 
     let rawId = sender.split('@')[0];
 
-    // 2. If it's a hidden WhatsApp LID, ask the system to translate it
+    // If it's a hidden WhatsApp LID, ask the system to translate it
     if (sender.endsWith('@lid')) {
         try {
-            console.log(`🔍 Translating hidden ID ${sender} to real phone number...`);
-            const resolved = await client.getContactLidAndPhone([sender]); // Library's official translator!
+            console.log(`📡 WhatsApp LID Detected. Translating ${sender} to real phone number...`);
+            const resolved = await client.getContactLidAndPhone([sender]);
             
             if (resolved && resolved.length > 0 && resolved[0].pn) {
                 rawId = resolved[0].pn.split('@')[0]; // Extracted JID (e.g., 233241963319)
-                console.log(`✅ Successfully translated to: ${rawId}`);
+                console.log(`✅ Successfully translated to raw JID: ${rawId}`);
+            } else {
+                console.log(`⚠️ Translation returned empty. Falling back to raw ID: ${rawId}`);
             }
         } catch (err) {
             console.error("🔴 Failed to translate hidden ID:", err.message);
         }
     }
 
-    // 3. Format to standard 10-digit Ghana format (024...)
+    // Format to standard 10-digit Ghana format (024...)
     let cleanPhone = rawId.trim();
     if (cleanPhone.startsWith('233')) {
         cleanPhone = '0' + cleanPhone.slice(3);
     }
 
-    // 4. Save to cache so we never have to run this API call for this user again
+    console.log(`📱 Final Cleaned Phone Number: ${cleanPhone}`);
+
+    // Save to cache
     lidCache[sender] = cleanPhone;
     return cleanPhone;
 }
@@ -52,10 +59,27 @@ async function resolveJidToPhone(sender) {
 async function getOrCreateUser(phone) {
     let cleanPhone = phone.trim();
     if (cleanPhone.startsWith('233')) cleanPhone = '0' + cleanPhone.slice(3);
-    const result = await db.query('SELECT * FROM users WHERE phone_number = $1', [cleanPhone]);
-    if (result.rows.length > 0) return result.rows[0];
-    const newUser = await db.query('INSERT INTO users (phone_number, wallet_balance) VALUES ($1, $2) RETURNING *', [cleanPhone, 0.00]);
-    return newUser.rows[0];
+
+    console.log(`🔎 DB QUERY: Searching for user with phone_number = '${cleanPhone}'`);
+
+    try {
+        const result = await db.query('SELECT * FROM users WHERE phone_number = $1', [cleanPhone]);
+        if (result.rows.length > 0) {
+            console.log(`✅ DB SUCCESS: User found. Wallet Balance: GHS ${result.rows[0].wallet_balance}`);
+            return result.rows[0];
+        } else {
+            console.log(`⚠️ DB WARNING: User '${cleanPhone}' not found. Creating guest account...`);
+            const newUser = await db.query(
+                'INSERT INTO users (phone_number, wallet_balance) VALUES ($1, $2) RETURNING *', 
+                [cleanPhone, 0.00]
+            );
+            console.log(`✅ DB SUCCESS: New guest account created for ${cleanPhone}`);
+            return newUser.rows[0];
+        }
+    } catch (err) {
+        console.error("🔴 DB Error in getOrCreateUser:", err.message);
+        throw err;
+    }
 }
 
 // --- PAYSTACK HELPERS ---
@@ -86,12 +110,11 @@ const chargeMoMoDirect = async (phone, amount, network, metadata) => {
     } catch (err) { return null; }
 };
 
-// --- INITIALIZE WHATSAPP CLIENT (FIXED: NO WEB CACHE CLASH) ---
+// --- INITIALIZE WHATSAPP CLIENT (NATIVE VERSION - SUPPORTS LIDs) ---
 const client = new Client({
     authStrategy: new LocalAuth({ clientId: "amg-bot-live" }),
-    // REMOVED webVersionCache ENTIRELY [1]
     puppeteer: {
-        headless: true, 
+        headless: true, // Headless on the Oracle Server
         args: [
             '--no-sandbox', 
             '--disable-setuid-sandbox', 
@@ -141,11 +164,16 @@ client.on('message', async (msg) => {
     const userMessage = msg.body.trim();
     const sender = msg.from;
 
-    // --- 🛡️ RESOLVE REAL PHONE NUMBER (LID TO JID) ---
-    // This fetches your actual, physical 10-digit Ghana number [1.1.2]
-    const formattedSender = await resolveJidToPhone(sender); 
+    console.log(`\n📩 --- NEW WHATSAPP MESSAGE ---`);
+    console.log(`From Raw ID: ${sender}`);
+    console.log(`Message Content: "${userMessage}"`);
 
-    // GLOBAL RESET: Press 0 at any point to start over
+    // Resolve the real phone number
+    const formattedSender = await resolveJidToPhone(sender); 
+    
+    console.log(`User mapped to AMG Phone: ${formattedSender}`);
+
+    // GLOBAL RESET
     if (userMessage === '0' || userMessage.toLowerCase() === 'reset' || userMessage.toLowerCase() === 'menu') {
         delete userStates[sender];
     }
