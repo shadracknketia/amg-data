@@ -86,16 +86,19 @@ const chargeMoMoDirect = async (phone, amount, network, metadata) => {
     } catch (err) { return null; }
 };
 
-// --- INITIALIZE WHATSAPP CLIENT ---
+// --- INITIALIZE WHATSAPP CLIENT (FIXED: NO WEB CACHE CLASH) ---
 const client = new Client({
     authStrategy: new LocalAuth({ clientId: "amg-bot-live" }),
-    webVersionCache: {
-        type: 'remote',
-        remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version-checker/master/remote/2.3000.1018903107-alpha.html',
-    },
+    // REMOVED webVersionCache ENTIRELY [1]
     puppeteer: {
-        headless: true, // Headless on the Oracle Server
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-accelerated-2d-canvas', '--disable-gpu'],
+        headless: true, 
+        args: [
+            '--no-sandbox', 
+            '--disable-setuid-sandbox', 
+            '--disable-dev-shm-usage', 
+            '--disable-accelerated-2d-canvas', 
+            '--disable-gpu'
+        ],
     }
 });
 
