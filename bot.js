@@ -40,6 +40,12 @@ async function resolveJidToPhone(sender) {
     return cleanPhone;
 }
 
+// --- 🧹 TEXT-CLEANSER: EXCLUDE 'SMM' AND 'REGULAR' ---
+function cleanPlanName(name) {
+    // Finds 'SMM' or 'Regular' (case-insensitive) and removes them cleanly [1]
+    return name.replace(/\s*SMM\s*/gi, '').replace(/\s*Regular\s*/gi, '').trim();
+}
+
 // --- 📊 DYNAMIC PLAN PAGINATOR (PAGES OF 5) ---
 async function _displayPlansForUser(sender, state) {
     const network = state.network;
@@ -59,7 +65,9 @@ async function _displayPlansForUser(sender, state) {
 
     let planMenu = `📊 *${network == 'AT' ? 'AirtelTigo' : network} Bundles* (Page ${page + 1})\n\n`;
     pageItems.forEach((p, i) => {
-        planMenu += `*${i + 1}* - ${p.plan_name} (GHS ${p.selling_price})\n`;
+        // --- FIXED: USE CLEANED PLAN NAME ---
+        const cleanedName = cleanPlanName(p.plan_name);
+        planMenu += `*${i + 1}* - ${cleanedName} (GHS ${p.selling_price})\n`;
     });
     planMenu += `\n`;
     
@@ -280,9 +288,11 @@ client.on('message', async (msg) => {
         } 
         else if (choice >= 1 && choice <= pageItems.length) {
             const selectedPlan = pageItems[choice - 1];
+            // FIXED: Clean the plan name before showing [1]
+            const cleanedName = cleanPlanName(selectedPlan.plan_name);
 
             userStates[sender] = { step: 'ENTERING_RECIPIENT', plan: selectedPlan };
-            return client.sendMessage(sender, `✅ Selected: *${selectedPlan.plan_name}*\n\nWhich number should *RECEIVE* the data?\n\n*1.* My number (${formattedSender})\n*OR* Type the 10-digit number:`);
+            return client.sendMessage(sender, `✅ Selected: *${cleanedName}*\n\nWhich number should *RECEIVE* the data?\n\n*1.* My number (${formattedSender})\n*OR* Type the 10-digit number:`);
         } else {
             return client.sendMessage(sender, "❌ Invalid selection. Please pick a number from the menu, or press 0 to go back.");
         }
@@ -309,7 +319,6 @@ client.on('message', async (msg) => {
         if (payer.startsWith('233')) payer = '0' + payer.slice(3);
         if (payer.length >= 10) {
             const plan = userStates[sender].plan;
-            
             const userRes = await db.query('SELECT * FROM users WHERE phone_number = $1', [formattedSender]);
             const user = userRes.rows[0];
             const balance = user ? parseFloat(user.wallet_balance) : 0.00;
@@ -319,8 +328,11 @@ client.on('message', async (msg) => {
             userStates[sender].step = 'CONFIRMING_ORDER';
             userStates[sender].hasEnoughBalance = (user && balance >= price);
 
-            let summary = `📝 *Summary*\n📦 ${plan.network_name} ${plan.plan_name}\n📱 Recipient: ${userStates[sender].recipient}\n💰 Cost: GHS ${price}\n🏦 Wallet: GHS ${balance}\n\n`;
-            
+            // FIXED: Clean the plan name in the summary card [1]
+            const cleanedName = cleanPlanName(plan.plan_name);
+
+            let summary = `📝 *Summary*\n📦 ${plan.network_name} ${cleanedName}\n📱 Recipient: ${userStates[sender].recipient}\n💰 Cost: GHS ${price}\n🏦 Wallet: GHS ${balance}\n\n`;
+
             if (userStates[sender].hasEnoughBalance) {
                 summary += `*1.* ✅ Pay with AMG Wallet\n*2.* 💳 Pay with MoMo\n`;
             } else {
@@ -372,12 +384,15 @@ client.on('message', async (msg) => {
             await db.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE phone_number = $2', [plan.selling_price, formattedSender]);
             
             const result = await sendDataRoundRobin(plan.network_name.toLowerCase(), state.recipient, plan.idata_plan_id);
+            const cleanedName = cleanPlanName(plan.plan_name); // FIXED: Clean name [1]
+
             if (result.success) {
                 await db.query(
                     'INSERT INTO transactions (user_phone, amount, network, data_volume, status, platform, provider, provider_order_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
                     [formattedSender, plan.selling_price, plan.network_name, plan.plan_name, 'SUCCESS', 'WHATSAPP', result.provider, result.order_id]
                 );
-                client.sendMessage(sender, `✅ *Success!* ${plan.plan_name} has been sent to ${state.recipient}.`);
+                // Cleaned name used here
+                client.sendMessage(sender, `✅ *Success!* ${cleanedName} has been sent to ${state.recipient}.`);
             } else {
                 await db.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE phone_number = $2', [plan.selling_price, formattedSender]);
                 await db.query(
