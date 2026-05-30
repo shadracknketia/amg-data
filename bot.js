@@ -10,10 +10,9 @@ const { sendDataRoundRobin } = require('./providers'); // Shares our rotating pr
 
 const db = new Pool({ connectionString: process.env.DATABASE_URL });
 const userStates = {}; 
+const lidCache = {}; // Local memory cache for LIDs (Bypasses Meta's hidden IDs)
 
 // --- 🛡️ THE BULLETPROOF LID-TO-PHONE RESOLVER & CACHE ---
-const lidCache = {}; // Stores mapped LIDs (e.g. "202018...@lid": "0241963319")
-
 async function resolveJidToPhone(sender) {
     if (lidCache[sender]) return lidCache[sender];
 
@@ -21,11 +20,15 @@ async function resolveJidToPhone(sender) {
 
     if (sender.endsWith('@lid')) {
         try {
+            console.log(`🔍 Translating hidden ID ${sender} to real phone number...`);
             const resolved = await client.getContactLidAndPhone([sender]);
             if (resolved && resolved.length > 0 && resolved[0].pn) {
                 rawId = resolved[0].pn.split('@')[0];
+                console.log(`✅ Successfully translated to raw JID: ${rawId}`);
             }
-        } catch (err) { /* silent fail */ }
+        } catch (err) {
+            console.error("🔴 Failed to translate hidden ID:", err.message);
+        }
     }
 
     let cleanPhone = rawId.trim();
@@ -35,6 +38,36 @@ async function resolveJidToPhone(sender) {
 
     lidCache[sender] = cleanPhone;
     return cleanPhone;
+}
+
+// --- 📊 DYNAMIC PLAN PAGINATOR (PAGES OF 5) ---
+async function _displayPlansForUser(sender, state) {
+    const network = state.network;
+    const page = state.page || 0;
+    const itemsPerPage = 5;
+
+    const plans = await db.query(
+        'SELECT * FROM data_plans WHERE is_active = true AND network_name = $1 ORDER BY buying_price ASC', 
+        [network]
+    );
+
+    const startIndex = page * itemsPerPage;
+    const endIndex = startIndex + itemsPerPage;
+    const pageItems = plans.rows.slice(startIndex, endIndex); 
+    const hasNextPage = plans.rows.length > endIndex;
+    const hasPrevPage = page > 0;
+
+    let planMenu = `📊 *${network == 'AT' ? 'AirtelTigo' : network} Bundles* (Page ${page + 1})\n\n`;
+    pageItems.forEach((p, i) => {
+        planMenu += `*${i + 1}* - ${p.plan_name} (GHS ${p.selling_price})\n`;
+    });
+    planMenu += `\n`;
+    
+    if (hasNextPage) planMenu += `*6.* ➡️ More Bundles\n`;
+    if (hasPrevPage) planMenu += `*7.* ⬅️ Previous Page\n`;
+    planMenu += `*0.* 🔙 Back to Networks`;
+
+    return client.sendMessage(sender, planMenu);
 }
 
 // --- DATABASE HELPER ---
@@ -79,11 +112,15 @@ const chargeMoMoDirect = async (phone, amount, network, metadata) => {
     } catch (err) { return null; }
 };
 
-// --- INITIALIZE WHATSAPP CLIENT (NATIVE VERSION - SUPPORTS LIDs) ---
+// --- INITIALIZE WHATSAPP CLIENT (NATIVE VERSION) ---
 const client = new Client({
     authStrategy: new LocalAuth({ clientId: "amg-bot-live" }),
+    webVersionCache: {
+        type: 'remote',
+        remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version-checker/master/remote/2.2413.51-v2.html',
+    },
     puppeteer: {
-        headless: true, // Headless on the Oracle Server
+        headless: true, 
         args: [
             '--no-sandbox', 
             '--disable-setuid-sandbox', 
@@ -94,7 +131,6 @@ const client = new Client({
     }
 });
 
-
 const triggerMoMoFlow = async (sender, state) => {
     const plan = state.plan;
     await client.sendMessage(sender, `⏳ Requesting GHS ${plan.selling_price} from *${state.payer}*...`);
@@ -103,17 +139,17 @@ const triggerMoMoFlow = async (sender, state) => {
     // Generate Web Link Fallback
     const pay = await startPaystackPayment('customer@amgdata.com', plan.selling_price, metadata);
     const checkoutUrl = pay && pay.status ? pay.data.authorization_url : null;
+    const paystackReference = pay && pay.status ? pay.data.reference : 'PROMPT_BUY';
 
     // Force Direct STK Push
     const charge = await chargeMoMoDirect(state.payer, plan.selling_price, plan.network_name.toLowerCase(), metadata);
 
     if (charge && charge.status) {
-        // --- 🧾 SAVES THE ACTUAL CHARGE REFERENCE COMPATIBLE WITH WEBHOOKS ---
         const actualReference = charge.data.reference; 
 
         await db.query(
             'INSERT INTO transactions (user_phone, amount, network, data_volume, status, platform, reference, checkout_url, plan_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
-            [state.payer, plan.selling_price, plan.network_name, plan.plan_name, 'PROCESSING', 'MOMO', actualReference, checkoutUrl, plan.id]
+            [state.payer, plan.selling_price, plan.network_name, plan.plan_name, 'PROCESSING', 'WHATSAPP', paystackReference, checkoutUrl, plan.id]
         );
         await client.sendMessage(sender, `🔔 *Payment Instructions*\n1. Authorize on your phone.\n2. *MTN:* Dial *170# -> 6 -> 10 if no prompt.\n3. Or pay here: ${checkoutUrl}`);
     } else {
@@ -132,6 +168,8 @@ client.on('ready', () => console.log('✅ AMG Bot is online and stable!'));
 client.on('message', async (msg) => {
     const userMessage = msg.body.trim();
     const sender = msg.from;
+
+    // Resolve real phone number
     const formattedSender = await resolveJidToPhone(sender); 
 
     if (userMessage === '0' || userMessage.toLowerCase() === 'reset' || userMessage.toLowerCase() === 'menu') {
@@ -147,9 +185,8 @@ client.on('message', async (msg) => {
         welcome += `2. 💰 Check Wallet Balance\n`;
         welcome += `3. 📖 Instructions\n`;
         welcome += `4. 📞 Support\n\n`;
-        // --- PRO APP PROMOTION LINK --- [1]
         welcome += `📲 *Download our Mobile App* for full transaction history, instant wallet top-ups, and auto-login:\n`;
-        welcome += `https://amg-data-api.duckdns.org/download-app\n\n`; // You can host the APK here later!
+        welcome += `https://amg-data-api.duckdns.org/download-app\n\n`;
         welcome += `*Reply with a number (1, 2, 3, or 4):*`;
         
         return client.sendMessage(sender, welcome);
@@ -158,14 +195,9 @@ client.on('message', async (msg) => {
     // --- STEP 2: MAIN MENU SELECTIONS ---
     if (userStates[sender].step === 'MAIN_MENU') {
         if (userMessage === '1') {
-            const plans = await db.query('SELECT * FROM data_plans WHERE is_active = true');
-            let planMenu = `📊 *Select Data Bundle*\n\n`;
-            plans.rows.forEach((p, i) => planMenu += `*${i + 1}* - ${p.network_name} ${p.plan_name} (GHS ${p.selling_price})\n`);
-            userStates[sender] = { step: 'CHOOSING_PLAN' };
-            return client.sendMessage(sender, planMenu + `\n*0. Back*`);
-            
+            userStates[sender] = { step: 'SELECTING_NETWORK' };
+            return client.sendMessage(sender, `📊 *Select Network*\n\n1. MTN\n2. Telecel\n3. AirtelTigo\n\n*0. Back*`);
         } else if (userMessage === '2') {
-            // FIXED: Searches using the clean formattedSender [1.1.2]
             const userRes = await db.query('SELECT * FROM users WHERE phone_number = $1', [formattedSender]);
             
             if (userRes.rows.length === 0 || !userRes.rows[0].pin) {
@@ -186,33 +218,79 @@ client.on('message', async (msg) => {
             help += `4. Enter your PIN (if using Wallet) or authorize the MoMo prompt.\n\n`;
             help += `*Delivery:* Data arrives in less than 10 minutes. If it does not arrive after 10 hours, contact support.\n\n`;
             help += `*0. Menu*`;
-            return client.sendMessage(sender, help);
+            return client.sendMessage(sender, help); // FIXED: Added sender argument
             
         } else if (userMessage === '4') {
             delete userStates[sender];
-            return client.sendMessage(sender, "📞 *AMG Support*\nNeed help? WhatsApp or Call our agent on *0241963319*.\n\n*0. Menu*");
+            return client.sendMessage(sender, "📞 *AMG Support*\nNeed help? WhatsApp or Call our agent on *0539743087*.\n\n*0. Menu*");
             
         } else {
             return client.sendMessage(sender, `❌ *Invalid Selection*\n\nPlease reply with *1*, *2*, *3*, or *4*:\n\n1. 🛒 Buy Data\n2. 💰 Check Wallet Balance\n3. 📖 Instructions\n4. 📞 Support`);
         }
     }
 
-    // --- STEP 3: CHOOSING PLAN ---
+    // --- STEP 3: SELECTING NETWORK ---
+    if (userStates[sender]?.step === 'SELECTING_NETWORK') {
+        if (userMessage === '0') {
+            delete userStates[sender];
+            return client.sendMessage(sender, "❌ Order cancelled.");
+        }
+
+        let network = '';
+        if (userMessage === '1') network = 'MTN';
+        else if (userMessage === '2') network = 'Telecel';
+        else if (userMessage === '3') network = 'AT';
+        else return client.sendMessage(sender, "❌ Invalid network selection. Please reply with 1, 2, 3, or 0.");
+
+        userStates[sender] = { step: 'CHOOSING_PLAN', network: network, page: 0 };
+        return _displayPlansForUser(sender, userStates[sender]);
+    }
+
+    // --- STEP 4: CHOOSING PLAN (PAGINATED) ---
     if (userStates[sender]?.step === 'CHOOSING_PLAN') {
-        const choice = parseInt(userMessage) - 1;
-        const plans = await db.query('SELECT * FROM data_plans WHERE is_active = true');
-        if (plans.rows[choice]) {
-            userStates[sender] = { step: 'ENTERING_RECIPIENT', plan: plans.rows[choice] };
-            return client.sendMessage(sender, `✅ Selected: *${plans.rows[choice].plan_name}*\n\nWhich number should *RECEIVE* the data?\n\n*1.* My number (${formattedSender})\n*OR* Type the 10-digit number:`);
+        const state = userStates[sender];
+        const network = state.network;
+        const page = state.page || 0;
+        const itemsPerPage = 5;
+
+        const plans = await db.query(
+            'SELECT * FROM data_plans WHERE is_active = true AND network_name = $1 ORDER BY buying_price ASC', 
+            [network]
+        );
+
+        const startIndex = page * itemsPerPage;
+        const endIndex = startIndex + itemsPerPage;
+        const pageItems = plans.rows.slice(startIndex, endIndex);
+        const hasNextPage = plans.rows.length > endIndex;
+        const hasPrevPage = page > 0;
+
+        const choice = parseInt(userMessage);
+
+        if (choice === 0) {
+            userStates[sender] = { step: 'SELECTING_NETWORK' };
+            return client.sendMessage(sender, `📊 *Select Network*\n\n1. MTN\n2. Telecel\n3. AirtelTigo\n\n*0. Back*`);
+        } 
+        else if (choice === 6 && hasNextPage) {
+            userStates[sender].page = page + 1;
+            return _displayPlansForUser(sender, userStates[sender]);
+        } 
+        else if (choice === 7 && hasPrevPage) {
+            userStates[sender].page = page - 1;
+            return _displayPlansForUser(sender, userStates[sender]);
+        } 
+        else if (choice >= 1 && choice <= pageItems.length) {
+            const selectedPlan = pageItems[choice - 1];
+
+            userStates[sender] = { step: 'ENTERING_RECIPIENT', plan: selectedPlan };
+            return client.sendMessage(sender, `✅ Selected: *${selectedPlan.plan_name}*\n\nWhich number should *RECEIVE* the data?\n\n*1.* My number (${formattedSender})\n*OR* Type the 10-digit number:`);
         } else {
-            return client.sendMessage(sender, "❌ Invalid choice. Please select a number from the menu above.");
+            return client.sendMessage(sender, "❌ Invalid selection. Please pick a number from the menu, or press 0 to go back.");
         }
     }
 
-    // --- STEP 4: ENTERING RECIPIENT ---
+    // --- STEP 5: ENTERING RECIPIENT ---
     if (userStates[sender]?.step === 'ENTERING_RECIPIENT') {
         if (userMessage === '0') { delete userStates[sender]; return; }
-        // FIXED: Replaced senderClean with formattedSender
         let recipient = userMessage === '1' ? formattedSender : userMessage;
         if (recipient.startsWith('233')) recipient = '0' + recipient.slice(3);
         if (recipient.length >= 10) {
@@ -224,7 +302,7 @@ client.on('message', async (msg) => {
         }
     }
 
-    // --- STEP 5: ENTERING PAYER ---
+    // --- STEP 6: ENTERING PAYER ---
     if (userStates[sender]?.step === 'ENTERING_PAYER') {
         if (userMessage === '0') { delete userStates[sender]; return; }
         let payer = userMessage === '1' ? userStates[sender].recipient : userMessage;
@@ -232,7 +310,6 @@ client.on('message', async (msg) => {
         if (payer.length >= 10) {
             const plan = userStates[sender].plan;
             
-            // FIXED: Replaced senderClean with formattedSender
             const userRes = await db.query('SELECT * FROM users WHERE phone_number = $1', [formattedSender]);
             const user = userRes.rows[0];
             const balance = user ? parseFloat(user.wallet_balance) : 0.00;
@@ -255,7 +332,7 @@ client.on('message', async (msg) => {
         }
     }
 
-    // --- STEP 6: CONFIRMING ORDER ---
+    // --- STEP 7: CONFIRMING ORDER ---
     if (userStates[sender]?.step === 'CONFIRMING_ORDER') {
         const state = userStates[sender];
         const plan = state.plan;
@@ -277,27 +354,42 @@ client.on('message', async (msg) => {
         }
     }
 
-    // --- STEP 7: PIN VERIFICATION (FOR WALLET) ---
-    if (userStates[sender]?.step === 'CONFIRMING_ORDER') {
+    // --- STEP 8: PIN VERIFICATION (FOR WALLET) ---
+    if (userStates[sender]?.step === 'VERIFYING_PIN') {
+        if (userMessage === '0') {
+            delete userStates[sender];
+            return client.sendMessage(sender, "❌ Transaction cancelled.");
+        }
+
         const state = userStates[sender];
         const plan = state.plan;
+        const enteredPin = userMessage;
 
-        if (userMessage === '1') {
-            if (state.hasEnoughBalance) {
-                userStates[sender].step = 'VERIFYING_PIN';
-                return client.sendMessage(sender, `🔒 *Security Check*\n\nPlease reply with your *4-digit AMG PIN* to authorize this GHS ${plan.selling_price} wallet transaction:\n\n*0. Cancel*`);
+        const user = await getOrCreateUser(formattedSender); 
+
+        if (user.pin === enteredPin) {
+            await client.sendMessage(sender, `⏳ PIN Verified. Deducting GHS ${plan.selling_price} from Wallet...`);
+            await db.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE phone_number = $2', [plan.selling_price, formattedSender]);
+            
+            const result = await sendDataRoundRobin(plan.network_name.toLowerCase(), state.recipient, plan.idata_plan_id);
+            if (result.success) {
+                await db.query(
+                    'INSERT INTO transactions (user_phone, amount, network, data_volume, status, platform, provider, provider_order_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+                    [formattedSender, plan.selling_price, plan.network_name, plan.plan_name, 'SUCCESS', 'WHATSAPP', result.provider, result.order_id]
+                );
+                client.sendMessage(sender, `✅ *Success!* ${plan.plan_name} has been sent to ${state.recipient}.`);
             } else {
-                await triggerMoMoFlow(sender, state);
+                await db.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE phone_number = $2', [plan.selling_price, formattedSender]);
+                await db.query(
+                    'INSERT INTO transactions (user_phone, amount, network, data_volume, status, platform) VALUES ($1, $2, $3, $4, $5, $6)',
+                    [formattedSender, plan.selling_price, plan.network_name, plan.plan_name, 'FAILED', 'WHATSAPP']
+                );
+                client.sendMessage(sender, `⚠️ Delivery failed. Your GHS ${plan.selling_price} has been refunded to your wallet.`);
             }
-        } else if (userMessage === '2' && state.hasEnoughBalance) {
-            await triggerMoMoFlow(sender, state);
-        } else if (userMessage === '0') {
-            // FIXED: Handles Cancel option
             delete userStates[sender];
-            return client.sendMessage(sender, "❌ Order cancelled.");
         } else {
-            // FIXED: Handles Invalid selections instead of staying silent
-            return client.sendMessage(sender, "❌ Invalid selection. Please reply with *1* to Pay, *2* to use MoMo, or *0* to Cancel.");
+            client.sendMessage(sender, "❌ Incorrect PIN. Wallet payment cancelled.");
+            delete userStates[sender];
         }
         return;
     }
