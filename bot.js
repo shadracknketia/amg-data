@@ -97,7 +97,11 @@ client.on('ready', () => console.log('✅ AMG Bot is online and stable!'));
 client.on('message', async (msg) => {
     const userMessage = msg.body.trim();
     const sender = msg.from;
-    const senderClean = sender.split('@')[0];
+    
+    // --- 🛡️ THE LID-TO-JID SECURITY PATCH ---
+    // Fetch the real contact profile to bypass WhatsApp's hidden companion IDs [1.1.2, 1.1.5]
+    const contact = await msg.getContact();
+    const senderClean = contact.number; // This is GUARANTEED to be their real phone number! [1.1.2, 1.1.5]
 
     // Format their WhatsApp ID into a standard 10-digit Ghana format (e.g. 024XXXXXXX)
     let formattedSender = senderClean;
