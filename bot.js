@@ -99,6 +99,7 @@ const client = new Client({
     }
 });
 
+
 const triggerMoMoFlow = async (sender, state) => {
     const plan = state.plan;
     await client.sendMessage(sender, `⏳ Requesting GHS ${plan.selling_price} from *${state.payer}*...`);
@@ -107,15 +108,17 @@ const triggerMoMoFlow = async (sender, state) => {
     // Generate Web Link Fallback
     const pay = await startPaystackPayment('customer@amgdata.com', plan.selling_price, metadata);
     const checkoutUrl = pay && pay.status ? pay.data.authorization_url : null;
-    const paystackReference = pay && pay.status ? pay.data.reference : 'PROMPT_BUY';
 
     // Force Direct STK Push
     const charge = await chargeMoMoDirect(state.payer, plan.selling_price, plan.network_name.toLowerCase(), metadata);
 
     if (charge && charge.status) {
+        // --- 🧾 SAVES THE ACTUAL CHARGE REFERENCE COMPATIBLE WITH WEBHOOKS ---
+        const actualReference = charge.data.reference; 
+
         await db.query(
             'INSERT INTO transactions (user_phone, amount, network, data_volume, status, platform, reference, checkout_url, plan_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
-            [state.payer, plan.selling_price, plan.network_name, plan.plan_name, 'PROCESSING', 'WHATSAPP', paystackReference, checkoutUrl, plan.id]
+            [state.payer, plan.selling_price, plan.network_name, plan.plan_name, 'PROCESSING', 'MOMO', actualReference, checkoutUrl, plan.id]
         );
         await client.sendMessage(sender, `🔔 *Payment Instructions*\n1. Authorize on your phone.\n2. *MTN:* Dial *170# -> 6 -> 10 if no prompt.\n3. Or pay here: ${checkoutUrl}`);
     } else {
@@ -135,8 +138,8 @@ client.on('message', async (msg) => {
     const userMessage = msg.body.trim();
     const sender = msg.from;
 
-    // --- 🛡️ RESOLVE REAL PHONE NUMBER ---
-    // This is guaranteed to bypass WhatsApp's hidden IDs safely!
+    // --- 🛡️ RESOLVE REAL PHONE NUMBER (LID TO JID) ---
+    // This fetches your actual, physical 10-digit Ghana number [1.1.2]
     const formattedSender = await resolveJidToPhone(sender); 
 
     // GLOBAL RESET: Press 0 at any point to start over
@@ -160,11 +163,10 @@ client.on('message', async (msg) => {
             return client.sendMessage(sender, planMenu + `\n*0. Back*`);
             
         } else if (userMessage === '2') {
-            // Check if this WhatsApp number actually exists in our Supabase database [1]
+            // FIXED: Searches using the clean formattedSender [1.1.2]
             const userRes = await db.query('SELECT * FROM users WHERE phone_number = $1', [formattedSender]);
             
             if (userRes.rows.length === 0 || !userRes.rows[0].pin) {
-                // If they are not registered, block them from checking balance [1]
                 delete userStates[sender];
                 return client.sendMessage(sender, `❌ *No Wallet Found*\n\nThis phone number (${formattedSender}) is not registered on our platform.\n\nPlease download our *Mobile App* to create an account and fund your wallet.\n\n*0. Menu*`);
             }
@@ -182,14 +184,13 @@ client.on('message', async (msg) => {
             help += `4. Enter your PIN (if using Wallet) or authorize the MoMo prompt.\n\n`;
             help += `*Delivery:* Data arrives in less than 10 minutes. If it does not arrive after 10 hours, contact support.\n\n`;
             help += `*0. Menu*`;
-            return client.sendMessage(help);
+            return client.sendMessage(sender, help);
             
         } else if (userMessage === '4') {
             delete userStates[sender];
             return client.sendMessage(sender, "📞 *AMG Support*\nNeed help? WhatsApp or Call our agent on *0241963319*.\n\n*0. Menu*");
             
         } else {
-            // FIXED: Resends the menu so they don't get stuck [1]
             return client.sendMessage(sender, `❌ *Invalid Selection*\n\nPlease reply with *1*, *2*, *3*, or *4*:\n\n1. 🛒 Buy Data\n2. 💰 Check Wallet Balance\n3. 📖 Instructions\n4. 📞 Support`);
         }
     }
@@ -200,7 +201,6 @@ client.on('message', async (msg) => {
         const plans = await db.query('SELECT * FROM data_plans WHERE is_active = true');
         if (plans.rows[choice]) {
             userStates[sender] = { step: 'ENTERING_RECIPIENT', plan: plans.rows[choice] };
-            // FIXED: Changed ${senderClean} to ${formattedSender}
             return client.sendMessage(sender, `✅ Selected: *${plans.rows[choice].plan_name}*\n\nWhich number should *RECEIVE* the data?\n\n*1.* My number (${formattedSender})\n*OR* Type the 10-digit number:`);
         } else {
             return client.sendMessage(sender, "❌ Invalid choice. Please select a number from the menu above.");
@@ -209,6 +209,8 @@ client.on('message', async (msg) => {
 
     // --- STEP 4: ENTERING RECIPIENT ---
     if (userStates[sender]?.step === 'ENTERING_RECIPIENT') {
+        if (userMessage === '0') { delete userStates[sender]; return; }
+        // FIXED: Replaced senderClean with formattedSender
         let recipient = userMessage === '1' ? formattedSender : userMessage;
         if (recipient.startsWith('233')) recipient = '0' + recipient.slice(3);
         if (recipient.length >= 10) {
@@ -222,12 +224,13 @@ client.on('message', async (msg) => {
 
     // --- STEP 5: ENTERING PAYER ---
     if (userStates[sender]?.step === 'ENTERING_PAYER') {
+        if (userMessage === '0') { delete userStates[sender]; return; }
         let payer = userMessage === '1' ? userStates[sender].recipient : userMessage;
         if (payer.startsWith('233')) payer = '0' + payer.slice(3);
         if (payer.length >= 10) {
             const plan = userStates[sender].plan;
             
-            // Check if user has an AMG account for Wallet payment option [1]
+            // FIXED: Replaced senderClean with formattedSender
             const userRes = await db.query('SELECT * FROM users WHERE phone_number = $1', [formattedSender]);
             const user = userRes.rows[0];
             const balance = user ? parseFloat(user.wallet_balance) : 0.00;
@@ -273,41 +276,26 @@ client.on('message', async (msg) => {
     }
 
     // --- STEP 7: PIN VERIFICATION (FOR WALLET) ---
-    if (userStates[sender]?.step === 'VERIFYING_PIN') {
-        if (userMessage === '0') {
-            delete userStates[sender];
-            return client.sendMessage(sender, "❌ Transaction cancelled.");
-        }
-
+    if (userStates[sender]?.step === 'CONFIRMING_ORDER') {
         const state = userStates[sender];
         const plan = state.plan;
-        const enteredPin = userMessage;
 
-        const user = await getOrCreateUser(formattedSender); // Use formatted sender [1]
-
-        if (user.pin === enteredPin) {
-            await client.sendMessage(sender, `⏳ PIN Verified. Deducting GHS ${plan.selling_price} from Wallet...`);
-            await db.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE phone_number = $2', [plan.selling_price, formattedSender]);
-            
-            const result = await sendDataRoundRobin(plan.network_name.toLowerCase(), state.recipient, plan.idata_plan_id);
-            if (result.success) {
-                await db.query(
-                    'INSERT INTO transactions (user_phone, amount, network, data_volume, status, platform, provider, provider_order_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
-                    [formattedSender, plan.selling_price, plan.network_name, plan.plan_name, 'SUCCESS', 'WHATSAPP', result.provider, result.order_id]
-                );
-                client.sendMessage(sender, `✅ *Success!* ${plan.plan_name} has been sent to ${state.recipient}.`);
+        if (userMessage === '1') {
+            if (state.hasEnoughBalance) {
+                userStates[sender].step = 'VERIFYING_PIN';
+                return client.sendMessage(sender, `🔒 *Security Check*\n\nPlease reply with your *4-digit AMG PIN* to authorize this GHS ${plan.selling_price} wallet transaction:\n\n*0. Cancel*`);
             } else {
-                await db.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE phone_number = $2', [plan.selling_price, formattedSender]);
-                await db.query(
-                    'INSERT INTO transactions (user_phone, amount, network, data_volume, status, platform) VALUES ($1, $2, $3, $4, $5, $6)',
-                    [formattedSender, plan.selling_price, plan.network_name, plan.plan_name, 'FAILED', 'WHATSAPP']
-                );
-                client.sendMessage(sender, `⚠️ Delivery failed. Your GHS ${plan.selling_price} has been refunded to your wallet.`);
+                await triggerMoMoFlow(sender, state);
             }
+        } else if (userMessage === '2' && state.hasEnoughBalance) {
+            await triggerMoMoFlow(sender, state);
+        } else if (userMessage === '0') {
+            // FIXED: Handles Cancel option
             delete userStates[sender];
+            return client.sendMessage(sender, "❌ Order cancelled.");
         } else {
-            client.sendMessage(sender, "❌ Incorrect PIN. Wallet payment cancelled.");
-            delete userStates[sender];
+            // FIXED: Handles Invalid selections instead of staying silent
+            return client.sendMessage(sender, "❌ Invalid selection. Please reply with *1* to Pay, *2* to use MoMo, or *0* to Cancel.");
         }
         return;
     }
