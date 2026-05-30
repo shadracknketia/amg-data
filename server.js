@@ -461,6 +461,20 @@ app.post('/api/admin/resolve-dispute', async (req, res) => {
     }
 });
 
+// 13. CUSTOM MARKETING REDIRECTOR (LAUNCHES WHATSAPP CHAT)
+app.get('/chat', (req, res) => {
+    // Replace this with your exact live WhatsApp Bot number (must start with 233 and have NO '+')
+    const botNumber = "233241963319"; 
+    
+    // Pre-fill the word 'Hi' so the user only has to click send [1]
+    const prefilledMessage = encodeURIComponent("Hi"); 
+    
+    console.log(`📣 Marketing Link Clicked! Redirecting user to WhatsApp Chat...`);
+    
+    // Redirect the browser straight into WhatsApp [1]
+    res.redirect(`https://wa.me/${botNumber}?text=${prefilledMessage}`);
+});
+
 // ==========================================
 //        5. ADMIN & SYSTEM ROUTES
 // ==========================================
