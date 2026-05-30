@@ -618,6 +618,25 @@ app.get('/api/admin/stats', async (req, res) => {
     }
 });
 
+// 14. ADMIN: EXPLORE PROVIDER PACKAGE IDs
+app.get('/api/admin/fetch-packages', async (req, res) => {
+    try {
+        const { network } = req.query; // This captures ?network=mtn, ?network=telecel, etc.
+        console.log(`📡 Fetching real-time packages from idata for: ${network}`);
+
+        const response = await axios.get(`https://idatagh.com/wp-json/custom/v1/packages?network=${network}`, {
+            headers: {
+                'Authorization': `Bearer ${process.env.IDATA_API_KEY}`,
+                'Content-Type': 'application/json'
+            }
+        });
+        res.json(response.data);
+    } catch (err) {
+        console.error("Failed to fetch packages:", err.response?.data || err.message);
+        res.status(500).json({ error: "Failed to fetch packages", details: err.response?.data || err.message });
+    }
+});
+
 // --- 🔄 BACKGROUND SYNC (CRON JOB) ---
 cron.schedule('*/30 * * * *', async () => {
     try {
