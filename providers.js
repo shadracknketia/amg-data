@@ -14,21 +14,24 @@ const providers = [
     }
 ];
 
-// Helper to format the payload correctly for each provider's unique API structure
+// Helper to format the payload correctly
 function formatPayload(providerName, network, phone, plan_id) {
     let net = network.toLowerCase();
+    
     if (providerName === 'idata') {
         if (net === 'at') net = 'airteltigo';
         return {
             "network": net,
             "beneficiary": phone,
-            "pa_data-bundle-packages": plan_id
+            // FIXED: Force plan_id to be a Number, not a String
+            "pa_data-bundle-packages": parseInt(plan_id, 10) 
         };
     } else if (providerName === 'datamart') {
         return {
             "network": net,
             "phone": phone,
-            "plan": plan_id
+            // Datamart might accept string, but let's be safe
+            "plan": plan_id 
         };
     }
     return {};
