@@ -21,12 +21,13 @@ function formatPayload(providerName, network, phone, plan_id) {
     if (providerName === 'idata') {
         if (net === 'at') net = 'airteltigo';
         
-        // FIXED: Send the plan_id directly as a Number
-        // We no longer try to guess the label, we trust the ID in Supabase
         return {
             "network": net,
             "beneficiary": phone,
-            "pa_data-bundle-packages": Number(plan_id) 
+            // 1. Sends the plan_id directly as a string (the label)
+            "pa_data-bundle-packages": plan_id.toString(), 
+            // 2. Adds the webhook so iData notifies your server automatically
+            "webhook": "https://amg-data-api.duckdns.org/payment/webhook" 
         };
     } else if (providerName === 'datamart') {
         return {
