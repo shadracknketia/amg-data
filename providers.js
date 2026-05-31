@@ -40,6 +40,15 @@ function formatPayload(providerName, network, phone, plan_id) {
 let currentIndex = 0;
 
 async function sendDataRoundRobin(network, phone, plan_id) {
+
+
+        // LOG EVERY REQUEST
+    const payload = formatPayload(provider.name, network, phone, plan_id);
+    console.log(`[DEBUG] Provider: ${provider.name}`);
+    console.log(`[DEBUG] URL: ${provider.url}`);
+    console.log(`[DEBUG] Payload being sent:`, JSON.stringify(payload));
+    console.log(`[DEBUG] Header Key Length: ${provider.key.length}`);
+
     const provider = providers[0]; // Force idata as primary
     console.log(`🚀 Sending to: ${provider.name} | URL: ${provider.url}`);
 
