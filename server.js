@@ -641,46 +641,29 @@ app.get('/api/admin/fetch-packages', async (req, res) => {
 cron.schedule('*/30 * * * *', async () => {
     try {
         const pending = await db.query("SELECT * FROM transactions WHERE status = 'PROCESSING'");
-        console.log(`\n🔄 Cron Job: Syncing ${pending.rows.length} pending orders...`);
+        console.log(`🔄 Cron Job: Syncing ${pending.rows.length} pending orders...`);
         
         for (let tx of pending.rows) {
-            const orderAgeInMinutes = (new Date() - new Date(tx.created_at)) / 1000 / 60;
-            
-            // --- SECURE TIMEOUT LOGIC ---
-            if (orderAgeInMinutes > 15) {
-                if (tx.platform === 'APP') {
-                    // WALLET TRANSACTION: Already paid, safe to auto-complete
-                    await db.query("UPDATE transactions SET status = 'SUCCESS', reference = 'AUTO_COMPLETE' WHERE id = $1", [tx.id]);
-                    console.log(`⚠️ Sync Timeout: Wallet Transaction ${tx.id} was stuck. Auto-marked as SUCCESS.`);
-                } else {
-                    // MOMO TRANSACTION: Unpaid, mark as FAILED because they abandoned it [1.2.6]
-                    await db.query("UPDATE transactions SET status = 'FAILED' WHERE id = $1", [tx.id]);
-                    console.log(`❌ Sync Timeout: Unpaid MoMo Transaction ${tx.id} was abandoned. Marked as FAILED.`);
-                }
-                continue;
-            }
-
             if (!tx.provider_order_id) continue; 
 
             try {
+                // Call iData's status checker
                 const statusRes = await axios.get(`https://idatagh.com/wp-json/custom/v1/order-status?order_id=${tx.provider_order_id}`, {
                     headers: { 'Authorization': `Bearer ${process.env.IDATA_API_KEY}`, 'Content-Type': 'application/json' }
                 });
 
                 if (statusRes.data.status === 'success') {
-                    const orderStatus = statusRes.data.order_status; 
-                    console.log(`Order ${tx.provider_order_id} status: ${orderStatus}`);
-
+                    const orderStatus = statusRes.data.order_status; // e.g., 'Completed', 'Failed'
+                    
                     if (orderStatus === 'Completed') {
                         await db.query("UPDATE transactions SET status = 'SUCCESS' WHERE id = $1", [tx.id]);
                         console.log(`✅ Sync: Transaction ${tx.id} marked as SUCCESS.`);
-                    } else if (orderStatus === 'Failed') {
+                    } 
+                    else if (orderStatus === 'Failed') {
                         await db.query("UPDATE transactions SET status = 'FAILED' WHERE id = $1", [tx.id]);
-                        
-                        // Only refund if they used the App Wallet [1.2.6]
                         if (tx.platform === 'APP') {
                             await db.query("UPDATE users SET wallet_balance = wallet_balance + $1 WHERE phone_number = $2", [tx.amount, tx.user_phone]);
-                            console.log(`❌ Sync: Wallet refunded GHS ${tx.amount} to ${tx.user_phone}.`);
+                            console.log(`❌ Sync: Transaction ${tx.id} failed. Refunded GHS ${tx.amount}.`);
                         }
                     }
                 }
@@ -688,9 +671,7 @@ cron.schedule('*/30 * * * *', async () => {
                 console.error(`Error syncing transaction ${tx.id}:`, err.message); 
             }
         }
-    } catch (err) { 
-        console.error("Cron Database Error:", err.message); 
-    }
+    } catch (err) { console.error("Cron Database Error:", err.message); }
 });
 
 // TEST A SPECIFIC PROVIDER INDEPENDENTLY
