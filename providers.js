@@ -7,11 +7,11 @@ const providers = [
         url: 'https://idatagh.com/wp-json/custom/v1/place-order', 
         key: process.env.IDATA_API_KEY 
     },
-    { 
-        name: 'datamart', 
-        url: 'https://api.datamartgh.shop/v1/purchase', // Ensure this is their live endpoint
-        key: process.env.DATAMART_API_KEY 
-    }
+    // { 
+    //     name: 'datamart', 
+    //     url: 'https://api.datamartgh.shop/v1/purchase', // Ensure this is their live endpoint
+    //     key: process.env.DATAMART_API_KEY 
+    // }
 ];
 
 // Helper to format the payload correctly
@@ -20,10 +20,12 @@ function formatPayload(providerName, network, phone, plan_id) {
     
     if (providerName === 'idata') {
         if (net === 'at') net = 'airteltigo';
+        
+        // FIXED: Send the plan_id directly as a Number
+        // We no longer try to guess the label, we trust the ID in Supabase
         return {
             "network": net,
             "beneficiary": phone,
-            // FIXED: Ensure plan_id is treated as a Number (e.g., 10497, not "10497")
             "pa_data-bundle-packages": Number(plan_id) 
         };
     } else if (providerName === 'datamart') {
