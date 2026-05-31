@@ -180,8 +180,14 @@ client.on('message', async (msg) => {
     // Resolve real phone number
     const formattedSender = await resolveJidToPhone(sender); 
 
+    // --- 🚨 THE GLOBAL RESET INTERCEPTOR ---
+    // If the user types 0, reset, or menu, we clear their state and force the Main Menu
     if (userMessage === '0' || userMessage.toLowerCase() === 'reset' || userMessage.toLowerCase() === 'menu') {
-        delete userStates[sender];
+        delete userStates[sender]; // Forget what the user was doing
+        userStates[sender] = { step: 'MAIN_MENU' }; // Force back to Main Menu
+        
+        // Return the Main Menu immediately and STOP further processing
+        return client.sendMessage(sender, `🌟 *Welcome back to AMG Affordable Data* 🌟\n\n1. 🛒 Buy Data\n2. 💰 Check Wallet Balance\n3. 📖 Instructions\n4. 📞 Support\n\n*Reply with a number:*`);
     }
 
     // --- STEP 1: MAIN MENU (CATCH-ALL) ---
@@ -312,35 +318,48 @@ client.on('message', async (msg) => {
         }
     }
 
-    // --- STEP 6: ENTERING PAYER ---
+    // --- STEP 5: ENTERING PAYER ---
     if (userStates[sender]?.step === 'ENTERING_PAYER') {
-        if (userMessage === '0') { delete userStates[sender]; return; }
-        let payer = userMessage === '1' ? userStates[sender].recipient : userMessage;
-        if (payer.startsWith('233')) payer = '0' + payer.slice(3);
-        if (payer.length >= 10) {
-            const plan = userStates[sender].plan;
-            const userRes = await db.query('SELECT * FROM users WHERE phone_number = $1', [formattedSender]);
-            const user = userRes.rows[0];
-            const balance = user ? parseFloat(user.wallet_balance) : 0.00;
-            const price = parseFloat(plan.selling_price);
+        if (userMessage === '0') { 
+            delete userStates[sender]; 
+            return client.sendMessage(sender, "❌ Order cancelled.");
+        }
 
+        // Logic: 
+        // If user types '1', they are paying with their OWN WhatsApp number.
+        // If they type a number, that number is the payer.
+        let payer = userMessage === '1' ? formattedSender : userMessage;
+        
+        if (payer.startsWith('233')) payer = '0' + payer.slice(3);
+
+        if (payer.length >= 10) {
+            const plan = state.plan; // Ensure 'state' is available
+            const recipient = userStates[sender].recipient;
+            
             userStates[sender].payer = payer;
             userStates[sender].step = 'CONFIRMING_ORDER';
-            userStates[sender].hasEnoughBalance = (user && balance >= price);
+            
+            // Fetch balance for the person actually paying (the WhatsApp user)
+            const user = await getOrCreateUser(formattedSender);
+            const balance = parseFloat(user.wallet_balance);
+            const price = parseFloat(plan.selling_price);
+            userStates[sender].hasEnoughBalance = (balance >= price);
 
-            // FIXED: Clean the plan name in the summary card [1]
-            const cleanedName = cleanPlanName(plan.plan_name);
-
-            let summary = `📝 *Summary*\n📦 ${plan.network_name} ${cleanedName}\n📱 Recipient: ${userStates[sender].recipient}\n💰 Cost: GHS ${price}\n🏦 Wallet: GHS ${balance}\n\n`;
-
+            let summary = `📝 *Summary*\n`;
+            summary += `📦 *Bundle:* ${plan.network_name} ${plan.plan_name}\n`;
+            summary += `📱 *Recipient:* ${recipient}\n`;
+            summary += `💳 *Payer Number:* ${payer}\n`;
+            summary += `💰 *Cost:* GHS ${price}\n\n`;
+            
             if (userStates[sender].hasEnoughBalance) {
-                summary += `*1.* ✅ Pay with AMG Wallet\n*2.* 💳 Pay with MoMo\n`;
+                summary += `*1.* ✅ Pay with AMG Wallet (GHS ${balance})\n`;
+                summary += `*2.* 💳 Pay with MoMo Prompt\n`;
             } else {
-                summary += `*1.* 💳 Pay with MoMo\n`;
+                summary += `*1.* 💳 Pay with MoMo Prompt\n`;
             }
             return client.sendMessage(sender, summary + `*0.* Cancel`);
         } else {
-            return client.sendMessage(sender, "❌ Please enter a valid 10-digit number.");
+            return client.sendMessage(sender, "❌ Invalid number. Please enter a 10-digit number.");
         }
     }
 

@@ -274,12 +274,13 @@ app.post('/api/purchase-wallet', async (req, res) => {
         const result = await sendDataRoundRobin(plan.network_name.toLowerCase(), recipient, plan.idata_plan_id);
 
         if (result.success) {
-            // 3. Save as PROCESSING and store the provider_order_id
+            // --- FIXED: MARK AS PROCESSING, NOT SUCCESS ---
             await db.query(
                 'INSERT INTO transactions (user_phone, amount, network, data_volume, status, platform, provider, provider_order_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
                 [phone, cost, plan.network_name, plan.plan_name, 'PROCESSING', 'APP', result.provider, result.order_id]
             );
             return res.json({ success: true, message: "Order placed! Processing..." });
+        
         } else {
             throw new Error(result.error || "Provider failed");
         }
@@ -316,10 +317,18 @@ app.post('/api/purchase-direct', async (req, res) => {
             checkoutUrl = payment && payment.status ? payment.data.authorization_url : null;
             paystackReference = payment && payment.status ? payment.data.reference : 'WEB_BUY';
         } else {
-            // MODE B: Trigger direct STK Push & get its unique charge reference
+            // 2. Trigger the real STK Push
             const charge = await chargeMoMoDirect(payer, plan.selling_price, network, metadata);
-            paystackReference = charge && charge.status ? charge.data.reference : 'PROMPT_BUY';
-            checkoutUrl = charge && charge.status ? charge.data.authorization_url : null;
+            
+            if (charge && charge.status) {
+                // --- FIXED: MARK AS PROCESSING, NOT SUCCESS ---
+                await db.query(
+                    'INSERT INTO transactions (user_phone, amount, network, data_volume, status, platform, reference, checkout_url, plan_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
+                    [payer, plan.selling_price, plan.network_name, plan.plan_name, 'PROCESSING', 'MOMO', charge.data.reference, checkoutUrl, plan_id]
+                );
+
+                res.json({ success: true, message: "Prompt sent!", checkout_url: checkoutUrl });
+            }
         }
 
         // --- 🧾 FIXED: WE NOW SAVE THE CORRECT MATCHING REFERENCE ---
