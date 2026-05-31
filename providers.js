@@ -23,15 +23,14 @@ function formatPayload(providerName, network, phone, plan_id) {
         return {
             "network": net,
             "beneficiary": phone,
-            // FIXED: Force plan_id to be a Number, not a String
-            "pa_data-bundle-packages": parseInt(plan_id, 10) 
+            // FIXED: Ensure plan_id is treated as a Number (e.g., 10497, not "10497")
+            "pa_data-bundle-packages": Number(plan_id) 
         };
     } else if (providerName === 'datamart') {
         return {
             "network": net,
             "phone": phone,
-            // Datamart might accept string, but let's be safe
-            "plan": plan_id 
+            "plan": plan_id
         };
     }
     return {};
