@@ -363,9 +363,9 @@ client.on('message', async (msg) => {
         }
     }
 
-    // --- STEP 7: CONFIRMING ORDER ---
+    // --- STEP 6: CONFIRMING ORDER ---
     if (userStates[sender]?.step === 'CONFIRMING_ORDER') {
-        const state = userStates[sender];
+        const state = userStates[sender]; // 👈 DEFINED HERE
         const plan = state.plan;
 
         if (userMessage === '1') {
@@ -383,16 +383,17 @@ client.on('message', async (msg) => {
         } else {
             return client.sendMessage(sender, "❌ Invalid selection. Press 1, 2, or 0.");
         }
+        return; // Added return to prevent falling through
     }
 
-    // --- STEP 8: PIN VERIFICATION (FOR WALLET) ---
+    // --- STEP 7: PIN VERIFICATION (FOR WALLET) ---
     if (userStates[sender]?.step === 'VERIFYING_PIN') {
         if (userMessage === '0') {
             delete userStates[sender];
             return client.sendMessage(sender, "❌ Transaction cancelled.");
         }
 
-        const state = userStates[sender];
+        const state = userStates[sender]; // 👈 DEFINED HERE
         const plan = state.plan;
         const enteredPin = userMessage;
 
@@ -400,18 +401,16 @@ client.on('message', async (msg) => {
 
         if (user.pin === enteredPin) {
             await client.sendMessage(sender, `⏳ PIN Verified. Deducting GHS ${plan.selling_price} from Wallet...`);
+            
             await db.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE phone_number = $2', [plan.selling_price, formattedSender]);
             
             const result = await sendDataRoundRobin(plan.network_name.toLowerCase(), state.recipient, plan.idata_plan_id);
-            const cleanedName = cleanPlanName(plan.plan_name); // FIXED: Clean name [1]
-
             if (result.success) {
                 await db.query(
                     'INSERT INTO transactions (user_phone, amount, network, data_volume, status, platform, provider, provider_order_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
                     [formattedSender, plan.selling_price, plan.network_name, plan.plan_name, 'SUCCESS', 'WHATSAPP', result.provider, result.order_id]
                 );
-                // Cleaned name used here
-                client.sendMessage(sender, `✅ *Success!* ${cleanedName} has been sent to ${state.recipient}.`);
+                client.sendMessage(sender, `✅ *Success!* ${plan.plan_name} has been sent to ${state.recipient}.`);
             } else {
                 await db.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE phone_number = $2', [plan.selling_price, formattedSender]);
                 await db.query(
