@@ -1,56 +1,99 @@
 // providers.js
 const axios = require('axios');
 
-// 1. LIST YOUR PROVIDERS HERE
-const providerList =[
-    { name: 'idata', url: 'https://idatagh.com/wp-json/custom/v1/place-order', key: process.env.IDATA_API_KEY },
-    { name: 'datamart', url: 'https://api.datamartgh.shop/v1/purchase', key: process.env.DATAMART_API_KEY },
-    // You can add more here later
+const providers = [
+    { 
+        name: 'idata', 
+        url: 'https://idatagh.com/wp-json/custom/v1/place-order', 
+        key: process.env.IDATA_API_KEY 
+    },
+    { 
+        name: 'datamart', 
+        url: 'https://api.datamartgh.shop/v1/purchase', // Ensure this is their live endpoint
+        key: process.env.DATAMART_API_KEY 
+    }
 ];
 
-let currentIndex = 0; // The "pointer" to rotate providers
+// Helper to format the payload correctly for each provider's unique API structure
+function formatPayload(providerName, network, phone, plan_id) {
+    let net = network.toLowerCase();
+    if (providerName === 'idata') {
+        if (net === 'at') net = 'airteltigo';
+        return {
+            "network": net,
+            "beneficiary": phone,
+            "pa_data-bundle-packages": plan_id
+        };
+    } else if (providerName === 'datamart') {
+        return {
+            "network": net,
+            "phone": phone,
+            "plan": plan_id
+        };
+    }
+    return {};
+}
+
+// Main Router (Round Robin)
+let currentIndex = 0;
 
 async function sendDataRoundRobin(network, phone, plan_id) {
-    // 2. ROTATE: Move to the next provider for every request
-    const provider = providerList[currentIndex];
-    currentIndex = (currentIndex + 1) % providerList.length; // Flips 0, 1, 0, 1...
+    const provider = providers[currentIndex];
+    currentIndex = (currentIndex + 1) % providers.length; // Rotate index
 
-    console.log(`🚀 Routing request to provider: ${provider.name}`);
+    console.log(`🚀 Round Robin: Selected primary provider -> ${provider.name}`);
 
     try {
-        const response = await axios.post(provider.url, 
-            { "network": network, "beneficiary": phone, "pa_data-bundle-packages": plan_id },
-            { headers: { 'Authorization': `Bearer ${provider.key}` } }
-        );
-        if (response.data.status === 'success') {
+        const payload = formatPayload(provider.name, network, phone, plan_id);
+        
+        const response = await axios.post(provider.url, payload, {
+            headers: { 
+                'Authorization': `Bearer ${provider.key}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        // STRICT CHECK: Only return success if status is explicitly 'success' [1.2.6]
+        if (response.data && (response.data.status === 'success' || response.data.code === '0000')) {
             return { success: true, order_id: response.data.order_id, provider: provider.name };
+        } else {
+            console.warn(`⚠️ Primary ${provider.name} returned logical error:`, response.data.message || "Unknown");
+            return await tryFallback(providers, network, phone, plan_id, provider.name);
         }
     } catch (err) {
-        console.error(`🔴 Provider ${provider.name} failed!`);
-        
-        // 3. FAILOVER: If the chosen one fails, try the OTHERS immediately
-        return await tryFallback(providerList, network, phone, plan_id);
+        console.error(`🔴 Primary ${provider.name} failed physically:`, err.message);
+        return await tryFallback(providers, network, phone, plan_id, provider.name);
     }
 }
 
-async function tryFallback(list, network, phone, plan_id) {
+// Fallback loop (Skips the one that just failed)
+async function tryFallback(list, network, phone, plan_id, failedProviderName) {
     for (let p of list) {
+        if (p.name === failedProviderName) continue; // Skip the failed one
+
         try {
-            console.log(`🔄 Attempting failover to: ${p.name}`);
-            const response = await axios.post(p.url, { 
-                "network": network, 
-                "beneficiary": phone, 
-                "pa_data-bundle-packages": plan_id 
-            }, { headers: { 'Authorization': `Bearer ${p.key}` } });
-            
-            // Return success with provider name!
-            return { success: true, order_id: response.data.order_id, provider: p.name };
+            console.log(`🔄 Failover: Attempting backup provider -> ${p.name}`);
+            const payload = formatPayload(p.name, network, phone, plan_id);
+
+            const response = await axios.post(p.url, payload, {
+                headers: { 
+                    'Authorization': `Bearer ${p.key}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            // STRICT CHECK IN FALLBACK [1.2.6]
+            if (response.data && (response.data.status === 'success' || response.data.code === '0000')) {
+                return { success: true, order_id: response.data.order_id, provider: p.name };
+            } else {
+                console.warn(`⚠️ Backup ${p.name} returned logical error:`, response.data.message || "Unknown");
+            }
         } catch (e) { 
-            console.error(`🔴 Fallback ${p.name} failed too.`);
+            console.error(`🔴 Backup ${p.name} failed physically:`, e.message);
             continue; 
         }
     }
-    return { success: false, error: "All providers exhausted." };
+    return { success: false, error: "All data providers failed." };
 }
 
 module.exports = { sendDataRoundRobin };
