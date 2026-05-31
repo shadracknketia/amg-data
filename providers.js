@@ -4,7 +4,7 @@ const axios = require('axios');
 const providers = [
     { 
         name: 'idata', 
-        url: 'https://idatagh.com/wp-json/custom/v1/place-order/', 
+        url: 'https://idatagh.com/wp-json/custom/v1/place-order', 
         key: process.env.IDATA_API_KEY 
     },
     { 
@@ -41,10 +41,8 @@ function formatPayload(providerName, network, phone, plan_id) {
 let currentIndex = 0;
 
 async function sendDataRoundRobin(network, phone, plan_id) {
-    const provider = providers[currentIndex];
-    currentIndex = (currentIndex + 1) % providers.length; // Rotate index
-
-    console.log(`🚀 Round Robin: Selected primary provider -> ${provider.name}`);
+    const provider = providers[0]; // Force idata as primary
+    console.log(`🚀 Sending to: ${provider.name} | URL: ${provider.url}`);
 
     try {
         const payload = formatPayload(provider.name, network, phone, plan_id);
@@ -56,16 +54,16 @@ async function sendDataRoundRobin(network, phone, plan_id) {
             }
         });
 
-        // STRICT CHECK: Only return success if status is explicitly 'success' [1.2.6]
+        // WordPress APIs are tricky. If it returns 200, check the body content
         if (response.data && (response.data.status === 'success' || response.data.code === '0000')) {
-            return { success: true, order_id: response.data.order_id, provider: provider.name };
+            return { success: true, order_id: response.data.order_id || 'N/A', provider: provider.name };
         } else {
-            console.warn(`⚠️ Primary ${provider.name} returned logical error:`, response.data.message || "Unknown");
-            return await tryFallback(providers, network, phone, plan_id, provider.name);
+            console.error("🔴 iData Logic Error:", response.data);
+            return { success: false, error: response.data.message };
         }
     } catch (err) {
-        console.error(`🔴 Primary ${provider.name} failed physically:`, err.message);
-        return await tryFallback(providers, network, phone, plan_id, provider.name);
+        console.error("🔴 iData Request Error:", err.response?.data || err.message);
+        return { success: false, error: err.message };
     }
 }
 
