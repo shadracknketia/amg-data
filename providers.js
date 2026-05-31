@@ -40,39 +40,35 @@ function formatPayload(providerName, network, phone, plan_id) {
 let currentIndex = 0;
 
 async function sendDataRoundRobin(network, phone, plan_id) {
+    const provider = providers[currentIndex];
+    currentIndex = (currentIndex + 1) % providers.length; 
 
-
-        // LOG EVERY REQUEST
+    // --- 🔍 ADVANCED LOGGING ---
     const payload = formatPayload(provider.name, network, phone, plan_id);
-    console.log(`[DEBUG] Provider: ${provider.name}`);
+    console.log(`[${new Date().toISOString()}] 🚀 Sending to ${provider.name}`);
     console.log(`[DEBUG] URL: ${provider.url}`);
-    console.log(`[DEBUG] Payload being sent:`, JSON.stringify(payload));
-    console.log(`[DEBUG] Header Key Length: ${provider.key.length}`);
-
-    const provider = providers[0]; // Force idata as primary
-    console.log(`🚀 Sending to: ${provider.name} | URL: ${provider.url}`);
+    console.log(`[DEBUG] Payload:`, JSON.stringify(payload));
 
     try {
-        const payload = formatPayload(provider.name, network, phone, plan_id);
-        
-        // FIXED: Added a 10-second timeout to prevent the server from hanging [1]
         const response = await axios.post(provider.url, payload, {
             headers: { 
                 'Authorization': `Bearer ${provider.key}`,
                 'Content-Type': 'application/json'
-            },
-            timeout: 10000 // 10 seconds timeout [1]
+            }
         });
+
+        // Log the full response so we can see the "why" behind any error [1]
+        console.log(`[${new Date().toISOString()}] 📥 Provider Response:`, JSON.stringify(response.data, null, 2));
 
         if (response.data && (response.data.status === 'success' || response.data.code === '0000')) {
             return { success: true, order_id: response.data.order_id || 'N/A', provider: provider.name };
         } else {
-            console.error("🔴 iData Logic Error:", response.data);
-            return { success: false, error: response.data.message || "Fulfillment failed" };
+            console.error(`⚠️ ${provider.name} returned logical error:`, response.data);
+            return await tryFallback(providers, network, phone, plan_id, provider.name);
         }
     } catch (err) {
-        console.error("🔴 iData Request Error:", err.response?.data || err.message);
-        return { success: false, error: err.message };
+        console.error(`🔴 ${provider.name} failed physically:`, err.response?.data || err.message);
+        return await tryFallback(providers, network, phone, plan_id, provider.name);
     }
 }
 
