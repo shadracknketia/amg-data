@@ -4,7 +4,7 @@ const axios = require('axios');
 const providers = [
     { 
         name: 'idata', 
-        url: 'https://idatagh.com/wp-json/custom/v1/place-order', 
+        url: 'https://idatagh.com/wp-json/custom/v1/place-order/', 
         key: process.env.IDATA_API_KEY 
     },
     { 
