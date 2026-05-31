@@ -55,19 +55,20 @@ async function sendDataRoundRobin(network, phone, plan_id) {
     try {
         const payload = formatPayload(provider.name, network, phone, plan_id);
         
+        // FIXED: Added a 10-second timeout to prevent the server from hanging [1]
         const response = await axios.post(provider.url, payload, {
             headers: { 
                 'Authorization': `Bearer ${provider.key}`,
                 'Content-Type': 'application/json'
-            }
+            },
+            timeout: 10000 // 10 seconds timeout [1]
         });
 
-        // WordPress APIs are tricky. If it returns 200, check the body content
         if (response.data && (response.data.status === 'success' || response.data.code === '0000')) {
             return { success: true, order_id: response.data.order_id || 'N/A', provider: provider.name };
         } else {
             console.error("🔴 iData Logic Error:", response.data);
-            return { success: false, error: response.data.message };
+            return { success: false, error: response.data.message || "Fulfillment failed" };
         }
     } catch (err) {
         console.error("🔴 iData Request Error:", err.response?.data || err.message);
