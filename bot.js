@@ -77,10 +77,27 @@ const triggerMoMoFlow = async (sender, state) => {
     await clearState(sender);
 };
 
-// --- CLIENT INIT ---
-const client = new Client({ authStrategy: new LocalAuth({ clientId: "amg-bot-live" }) });
-client.on('qr', (qr) => qrcode.generate(qr, { small: true }));
-client.on('ready', () => console.log('✅ AMG Bot is online!'));
+// --- INITIALIZE WHATSAPP CLIENT (NATIVE VERSION) ---
+const client = new Client({
+    authStrategy: new LocalAuth({ clientId: "amg-bot-live" }),
+    webVersionCache: {
+        type: 'remote',
+        remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version-checker/master/remote/2.2413.51-v2.html',
+    },
+    puppeteer: {
+        headless: true, 
+        args:[
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--single-process', // Sometimes needed for low-memory VPS
+            '--disable-gpu'
+        ],
+    }
+});
 
 // --- MAIN MESSAGE LOGIC ---
 client.on('message', async (msg) => {
