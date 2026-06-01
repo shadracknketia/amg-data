@@ -180,14 +180,9 @@ client.on('message', async (msg) => {
     // Resolve real phone number
     const formattedSender = await resolveJidToPhone(sender); 
 
-    // --- 🚨 THE GLOBAL RESET INTERCEPTOR ---
-    // If the user types 0, reset, or menu, we clear their state and force the Main Menu
+    // --- RESET LOGIC ---
     if (userMessage === '0' || userMessage.toLowerCase() === 'reset' || userMessage.toLowerCase() === 'menu') {
-        delete userStates[sender]; // Forget what the user was doing
-        userStates[sender] = { step: 'MAIN_MENU' }; // Force back to Main Menu
-        
-        // Return the Main Menu immediately and STOP further processing
-        return client.sendMessage(sender, `🌟 *Welcome back to AMG Affordable Data* 🌟\n\n1. 🛒 Buy Data\n2. 💰 Check Wallet Balance\n3. 📖 Instructions\n4. 📞 Support\n\n*Reply with a number:*`);
+        delete userStates[sender];
     }
 
     // --- STEP 1: MAIN MENU (CATCH-ALL) ---
@@ -371,6 +366,8 @@ client.on('message', async (msg) => {
         if (userMessage === '1') {
             if (state.hasEnoughBalance) {
                 userStates[sender].step = 'VERIFYING_PIN';
+                const state = userStates[sender]; // DEFINED HERE
+                const plan = state.plan;           // DEFINED HERE
                 return client.sendMessage(sender, `🔒 *Security Check*\n\nPlease reply with your *4-digit AMG PIN* to authorize this GHS ${plan.selling_price} wallet transaction:\n\n*0. Cancel*`);
             } else {
                 await triggerMoMoFlow(sender, state);
