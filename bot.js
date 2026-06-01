@@ -107,7 +107,7 @@ client.on('message', async (msg) => {
         const formattedSender = await resolveJidToPhone(sender);
         
         // --- 1. RESET LOGIC ---
-        if (['0', 'reset', 'menu'].includes(userMessage.toLowerCase())) {
+        if (state && ['0', 'reset', 'menu'].includes(userMessage.toLowerCase())) {
             await clearState(sender);
             return client.sendMessage(sender, "🔄 Session reset. Reply '1' to see the Main Menu.");
         }
@@ -116,6 +116,10 @@ client.on('message', async (msg) => {
 
         // --- 2. INITIAL WELCOME (NO "REPLY 1" SHOWN HERE) ---
         if (!state) {
+
+            // Check if user is trying to reset on first chat (ignore it)
+            if (['0', 'reset', 'menu'].includes(userMessage.toLowerCase())) return;
+
             state = { step: 'MAIN_MENU' };
             await setState(sender, state);
             let welcome = `🌟 *Welcome to AMG Affordable Data* 🌟\n\n`;
