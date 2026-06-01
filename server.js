@@ -216,8 +216,14 @@ app.post('/api/user/set-pin', async (req, res) => {
 
 app.get('/api/history/:phone', async (req, res) => {
     try {
-        const phone = req.params.phone;
-        const history = await db.query('SELECT * FROM transactions WHERE user_phone = $1 ORDER BY created_at DESC LIMIT 20', [phone]);
+        let phone = req.params.phone.trim();
+        // Force conversion to '0...' format if it came in as '233...'
+        if (phone.startsWith('233')) phone = '0' + phone.slice(3);
+        
+        const history = await db.query(
+            'SELECT * FROM transactions WHERE user_phone = $1 ORDER BY created_at DESC LIMIT 20', 
+            [phone]
+        );
         res.json(history.rows);
     } catch (err) { res.status(500).json({ error: "Failed to fetch history" }); }
 });
