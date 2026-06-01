@@ -104,43 +104,55 @@ client.on('message', async (msg) => {
     try {
         const sender = msg.from;
         const userMessage = msg.body.trim();
-
-        // Log incoming message for debugging
-        console.log(`📩 Message from ${sender}: ${userMessage}`);
-
         const formattedSender = await resolveJidToPhone(sender);
         
+        // --- 1. RESET LOGIC ---
         if (['0', 'reset', 'menu'].includes(userMessage.toLowerCase())) {
             await clearState(sender);
-            return client.sendMessage(sender, "🔄 Reset. Reply '1' for Main Menu.");
+            return client.sendMessage(sender, "🔄 Session reset. Reply '1' to see the Main Menu.");
         }
 
         let state = await getState(sender);
 
+        // --- 2. INITIAL WELCOME (NO "REPLY 1" SHOWN HERE) ---
         if (!state) {
             state = { step: 'MAIN_MENU' };
             await setState(sender, state);
-            return client.sendMessage(sender, `🌟 *Welcome to AMG Affordable Data*\n\n1. 🛒 Buy Data\n2. 💰 Check Wallet\n3. 📖 Instructions\n4. 📞 Support`);
+            let welcome = `🌟 *Welcome to AMG Affordable Data* 🌟\n\n`;
+            welcome += `1. 🛒 Buy Data\n`;
+            welcome += `2. 💰 Check Wallet Balance\n`;
+            welcome += `3. 📖 Instructions\n`;
+            welcome += `4. 📞 Support\n\n`;
+            welcome += `📲 *Download our Mobile App*:\nhttps://amg-data-api.duckdns.org/download-app\n\n`;
+            welcome += `*Reply with a number (1, 2, 3, or 4):*`;
+            return client.sendMessage(sender, welcome);
         }
 
+        // --- 3. MAIN MENU SELECTIONS ---
         if (state.step === 'MAIN_MENU') {
             if (userMessage === '1') {
                 state.step = 'SELECTING_NETWORK';
                 await setState(sender, state);
-                return client.sendMessage(sender, `📊 *Select Network*\n1. MTN\n2. Telecel\n3. AirtelTigo\n*0. Back*`);
+                return client.sendMessage(sender, `📊 *Select Network*\n\n1. MTN\n2. Telecel\n3. AirtelTigo\n\n*0. Back*`);
             } else if (userMessage === '2') {
-                const user = await getOrCreateUser(formattedSender);
+                const userRes = await db.query('SELECT * FROM users WHERE phone_number = $1', [formattedSender]);
+                if (userRes.rows.length === 0 || !userRes.rows[0].pin) {
+                    await clearState(sender);
+                    return client.sendMessage(sender, `❌ *No Wallet Found*\n\nPlease download our *Mobile App* to create an account.\n\n*0. Menu*`);
+                }
+                const user = userRes.rows[0];
                 await clearState(sender);
-                return client.sendMessage(sender, user.pin ? `💰 *Balance:* GHS ${user.wallet_balance}` : `❌ No wallet found.`);
+                return client.sendMessage(sender, `💰 *AMG Wallet Balance*\n\nAccount: *${formattedSender}*\nBalance: *GHS ${user.wallet_balance}*\n\n*0. Menu*`);
             } else if (userMessage === '3') {
                 await clearState(sender);
-                return client.sendMessage(sender, `📖 *Instructions:*\n1. Pick 1 to Buy.\n2. Follow steps.\n3. Verify with PIN or MoMo.`);
+                return client.sendMessage(sender, `📖 *How to Buy Data*\n\n1. Reply '1' to Buy.\n2. Choose network/bundle.\n3. Enter details.\n4. Authorize.\n\n*0. Menu*`);
             } else if (userMessage === '4') {
                 await clearState(sender);
-                return client.sendMessage(sender, "📞 *Support:* 0539743087");
+                return client.sendMessage(sender, "📞 *AMG Support*\nNeed help? Contact *0539743087*.\n\n*0. Menu*");
             }
         }
 
+        // --- 4. SELECTING NETWORK ---
         if (state.step === 'SELECTING_NETWORK') {
             const netMap = { '1': 'MTN', '2': 'Telecel', '3': 'AT' };
             if (netMap[userMessage]) {
@@ -152,13 +164,13 @@ client.on('message', async (msg) => {
             }
         }
 
+        // --- 5. CHOOSING PLAN ---
         if (state.step === 'CHOOSING_PLAN') {
             const choice = parseInt(userMessage);
-            if (choice === 0) { state.step = 'MAIN_MENU'; await setState(sender, state); return client.sendMessage(sender, "Back to menu."); }
-            
             const plans = await db.query('SELECT * FROM data_plans WHERE is_active = true AND network_name = $1 ORDER BY buying_price ASC', [state.network]);
             const pageItems = plans.rows.slice(state.page * 5, (state.page * 5) + 5);
-            
+
+            if (choice === 0) { state.step = 'MAIN_MENU'; await setState(sender, state); return client.sendMessage(sender, "Back to Main Menu."); }
             if (choice === 6) { state.page++; await setState(sender, state); return _displayPlansForUser(sender, state); }
             if (choice === 7) { state.page--; await setState(sender, state); return _displayPlansForUser(sender, state); }
             
@@ -166,17 +178,19 @@ client.on('message', async (msg) => {
                 state.plan = pageItems[choice - 1];
                 state.step = 'ENTERING_RECIPIENT';
                 await setState(sender, state);
-                return client.sendMessage(sender, `✅ Selected: ${cleanPlanName(state.plan.plan_name)}\nEnter recipient number (1 for your number):`);
+                return client.sendMessage(sender, `✅ Selected: *${cleanPlanName(state.plan.plan_name)}*\n\nWhich number should *RECEIVE* the data?\n\n*1.* My number (${formattedSender})\n*OR* Type the 10-digit number:`);
             }
         }
 
+        // --- 6. ENTERING RECIPIENT ---
         if (state.step === 'ENTERING_RECIPIENT') {
             state.recipient = userMessage === '1' ? formattedSender : userMessage;
             state.step = 'ENTERING_PAYER';
             await setState(sender, state);
-            return client.sendMessage(sender, `📱 Data for: ${state.recipient}\nWhich number is paying? (1 for same):`);
+            return client.sendMessage(sender, `📱 Data for: *${state.recipient}*\n\nWhich number is *PAYING*?\n\n*1.* Same as recipient\n*OR* Type the MoMo number:`);
         }
 
+        // --- 7. ENTERING PAYER ---
         if (state.step === 'ENTERING_PAYER') {
             state.payer = userMessage === '1' ? state.recipient : userMessage;
             const user = await getOrCreateUser(formattedSender);
@@ -184,16 +198,17 @@ client.on('message', async (msg) => {
             state.step = 'CONFIRMING_ORDER';
             await setState(sender, state);
             
-            let msg = `📝 *Summary*\nBundle: ${state.plan.plan_name}\nCost: GHS ${state.plan.selling_price}\n\n`;
-            msg += state.hasEnoughBalance ? `1. Wallet\n2. MoMo` : `1. MoMo`;
-            return client.sendMessage(sender, msg);
+            let summary = `📝 *Summary*\nBundle: ${state.plan.network_name} ${state.plan.plan_name}\nCost: GHS ${state.plan.selling_price}\n\n`;
+            summary += state.hasEnoughBalance ? `*1.* ✅ Pay with Wallet\n*2.* 💳 Pay with MoMo\n` : `*1.* 💳 Pay with MoMo\n`;
+            return client.sendMessage(sender, summary + `*0.* Cancel`);
         }
 
+        // --- 8. CONFIRMING & PIN ---
         if (state.step === 'CONFIRMING_ORDER') {
             if (userMessage === '1' && state.hasEnoughBalance) {
                 state.step = 'VERIFYING_PIN';
                 await setState(sender, state);
-                return client.sendMessage(sender, "Enter your 4-digit PIN:");
+                return client.sendMessage(sender, `🔒 *Security Check*\nEnter your 4-digit AMG PIN:`);
             } else {
                 await triggerMoMoFlow(sender, state);
             }
@@ -204,24 +219,20 @@ client.on('message', async (msg) => {
             if (user.pin === userMessage) {
                 await db.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE phone_number = $2', [state.plan.selling_price, formattedSender]);
                 const res = await sendDataRoundRobin(state.plan.network_name.toLowerCase(), state.recipient, state.plan.idata_plan_id);
-                if (res.success) client.sendMessage(sender, "✅ Success!");
+                if (res.success) client.sendMessage(sender, "✅ *Success!* Order delivered.");
                 else {
                     await db.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE phone_number = $2', [state.plan.selling_price, formattedSender]);
-                    client.sendMessage(sender, "⚠️ Failed. Refunded.");
+                    client.sendMessage(sender, "⚠️ Failed. Refunded to wallet.");
                 }
             } else {
                 client.sendMessage(sender, "❌ Incorrect PIN.");
             }
             await clearState(sender);
-            
         }
 
-        } catch (err) {
-        console.error("🔴 CRITICAL BOT ERROR:", err);
-        // Optional: Notify the user so they know something went wrong
-        // await client.sendMessage(msg.from, "❌ Sorry, an error occurred. Please try again.");
+    } catch (err) {
+        console.error("🔴 Bot Error:", err);
     }
-    
 });
 
 client.initialize();
