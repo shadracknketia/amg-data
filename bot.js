@@ -106,22 +106,23 @@ client.on('message', async (msg) => {
         const userMessage = msg.body.trim();
         const formattedSender = await resolveJidToPhone(sender);
         
-        // --- 1. RESET LOGIC ---
+        // 1. Fetch the state from Redis
+        let state = await getState(sender);
+
+        // 2. RESET LOGIC (Only if state exists)
         if (state && ['0', 'reset', 'menu'].includes(userMessage.toLowerCase())) {
             await clearState(sender);
             return client.sendMessage(sender, "🔄 Session reset. Reply '1' to see the Main Menu.");
         }
 
-        let state = await getState(sender);
-
-        // --- 2. INITIAL WELCOME (NO "REPLY 1" SHOWN HERE) ---
+        // 3. INITIAL WELCOME (If no state exists)
         if (!state) {
-
-            // Check if user is trying to reset on first chat (ignore it)
+            // Ignore reset commands on first touch
             if (['0', 'reset', 'menu'].includes(userMessage.toLowerCase())) return;
 
             state = { step: 'MAIN_MENU' };
             await setState(sender, state);
+            
             let welcome = `🌟 *Welcome to AMG Affordable Data* 🌟\n\n`;
             welcome += `1. 🛒 Buy Data\n`;
             welcome += `2. 💰 Check Wallet Balance\n`;
@@ -129,6 +130,7 @@ client.on('message', async (msg) => {
             welcome += `4. 📞 Support\n\n`;
             welcome += `📲 *Download our Mobile App*:\nhttps://amg-data-api.duckdns.org/download-app\n\n`;
             welcome += `*Reply with a number (1, 2, 3, or 4):*`;
+            
             return client.sendMessage(sender, welcome);
         }
 
