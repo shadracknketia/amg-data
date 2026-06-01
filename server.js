@@ -9,6 +9,8 @@ const qrcode = require('qrcode-terminal');
 const crypto = require('crypto');
 const { sendDataRoundRobin } = require('./providers'); // Rotating providers engine
 const cron = require('node-cron'); 
+const { db, getOrCreateUser } = require('./helpers');
+const { setState, getState, clearState } = require('./redisClient');
 
 const app = express();
 app.use(cors());
@@ -149,7 +151,7 @@ const triggerMoMoFlow = async (sender, state) => {
     } else {
         await client.sendMessage(sender, "❌ Payment system down. Try later.");
     }
-    delete userStates[sender];
+    await clearState(sender);
 };
 
 // ==========================================
