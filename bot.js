@@ -103,23 +103,22 @@ const client = new Client({
 client.on('message', async (msg) => {
     try {
         const sender = msg.from;
-        const userMessage = msg.body.trim().toLowerCase(); // Normalize once here
+        const userMessage = msg.body.trim();
         const formattedSender = await resolveJidToPhone(sender);
         
+        // 1. Fetch the state from Redis
         let state = await getState(sender);
 
-        // --- STRICT RESET LOGIC ---
-        // 1. Only reset if the message is explicitly '0', 'reset', or 'menu'
-        // 2. Only reset IF a state actually exists (prevents ghost triggers on first chat)
-        if (state && ['0', 'reset', 'menu'].includes(userMessage)) {
+        // 2. RESET LOGIC (Only if state exists)
+        if (state && ['0', 'reset', 'menu'].includes(userMessage.toLowerCase())) {
             await clearState(sender);
             return client.sendMessage(sender, "🔄 Session reset. Reply '1' to see the Main Menu.");
         }
 
-        // --- WELCOME MESSAGE ---
+        // 3. INITIAL WELCOME (If no state exists)
         if (!state) {
-            // If the user types a reset command on the VERY FIRST message, ignore it
-            if (['0', 'reset', 'menu'].includes(userMessage)) return;
+            // Ignore reset commands on first touch
+            if (['0', 'reset', 'menu'].includes(userMessage.toLowerCase())) return;
 
             state = { step: 'MAIN_MENU' };
             await setState(sender, state);
@@ -129,6 +128,7 @@ client.on('message', async (msg) => {
             welcome += `2. 💰 Check Wallet Balance\n`;
             welcome += `3. 📖 Instructions\n`;
             welcome += `4. 📞 Support\n\n`;
+            welcome += `📲 *Download our Mobile App*:\nhttps://amg-data-api.duckdns.org/download-app\n\n`;
             welcome += `*Reply with a number (1, 2, 3, or 4):*`;
             
             return client.sendMessage(sender, welcome);
