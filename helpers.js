@@ -10,11 +10,14 @@ async function getOrCreateUser(phone) {
     let cleanPhone = phone.trim();
     if (cleanPhone.startsWith('233')) cleanPhone = '0' + cleanPhone.slice(3);
 
-    const { rows } = await db.query('SELECT * FROM users WHERE phone_number = $1', [cleanPhone]);
+    // Ensure we select the balance explicitly
+    const { rows } = await db.query('SELECT phone_number, wallet_balance, pin FROM users WHERE phone_number = $1', [cleanPhone]);
+    
     if (rows.length > 0) return rows[0];
 
+    // If new user, set balance to 0.00
     const newUser = await db.query(
-        'INSERT INTO users (phone_number, wallet_balance) VALUES ($1, $2) RETURNING *', 
+        'INSERT INTO users (phone_number, wallet_balance) VALUES ($1, $2) RETURNING phone_number, wallet_balance, pin', 
         [cleanPhone, 0.00]
     );
     return newUser.rows[0];

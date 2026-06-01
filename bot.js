@@ -198,48 +198,51 @@ client.on('message', async (msg) => {
 
         // --- 7. ENTERING PAYER ---
         if (state.step === 'ENTERING_PAYER') {
-            state.payer = userMessage === '1' ? state.recipient : userMessage;
-            const user = await getOrCreateUser(formattedSender);
-            state.hasEnoughBalance = parseFloat(user.wallet_balance) >= parseFloat(state.plan.selling_price);
-            state.step = 'CONFIRMING_ORDER';
-            await setState(sender, state);
-            
-            let summary = `📝 *Summary*\nBundle: ${state.plan.network_name} ${state.plan.plan_name}\nCost: GHS ${state.plan.selling_price}\n\n`;
-            summary += state.hasEnoughBalance ? `*1.* ✅ Pay with Wallet\n*2.* 💳 Pay with MoMo\n` : `*1.* 💳 Pay with MoMo\n`;
-            return client.sendMessage(sender, summary + `*0.* Cancel`);
-        }
-
-        // --- 8. CONFIRMING & PIN ---
-        if (state.step === 'ENTERING_PAYER') {
-            // Normalize payer number
             let payer = userMessage === '1' ? formattedSender : userMessage;
             if (payer.startsWith('233')) payer = '0' + payer.slice(3);
             
             state.payer = payer;
             
-            // Re-fetch user to get the latest wallet balance for the summary
             const user = await getOrCreateUser(formattedSender);
-            state.hasEnoughBalance = parseFloat(user.wallet_balance) >= parseFloat(state.plan.selling_price);
+            
+            // DEBUG: See what is coming from DB
+            console.log("DEBUG: User fetched from DB:", user);
+            
+            // Force conversion to number
+            const balance = parseFloat(user.wallet_balance || 0);
+            const cost = parseFloat(state.plan.selling_price || 0);
+            
+            state.hasEnoughBalance = balance >= cost;
             state.step = 'CONFIRMING_ORDER';
             
-            // Save updated state with payer and balance info
             await setState(sender, state);
             
-            // Construct the exact summary you had
             let summary = `📝 *Summary*\n`;
             summary += `📦 *Bundle:* ${state.plan.network_name} ${state.plan.plan_name}\n`;
             summary += `📱 *Recipient:* ${state.recipient}\n`;
             summary += `💳 *Payer Number:* ${state.payer}\n`;
             summary += `💰 *Cost:* GHS ${state.plan.selling_price}\n\n`;
             
+            // Use the balance variable we just parsed
             if (state.hasEnoughBalance) {
-                summary += `*1.* ✅ Pay with AMG Wallet (GHS ${user.wallet_balance})\n`;
+                summary += `*1.* ✅ Pay with AMG Wallet (GHS ${balance.toFixed(2)})\n`;
                 summary += `*2.* 💳 Pay with MoMo Prompt\n`;
             } else {
                 summary += `*1.* 💳 Pay with MoMo Prompt\n`;
             }
             
             return client.sendMessage(sender, summary + `*0.* Cancel`);
+        }
+
+        // --- 8. CONFIRMING & PIN ---
+        if (state.step === 'CONFIRMING_ORDER') {
+            if (userMessage === '1' && state.hasEnoughBalance) {
+                state.step = 'VERIFYING_PIN';
+                await setState(sender, state);
+                return client.sendMessage(sender, `🔒 *Security Check*\nEnter your 4-digit AMG PIN:`);
+            } else {
+                await triggerMoMoFlow(sender, state);
+            }
         }
 
         if (state.step === 'VERIFYING_PIN') {
