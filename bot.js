@@ -55,25 +55,61 @@ async function _displayPlansForUser(sender, state) {
     return client.sendMessage(sender, planMenu);
 }
 
+// --- RESTORED: FORCE DIRECT STK PUSH (MOMO PROMPT) ---
+const chargeMoMoDirect = async (phone, amount, network, metadata) => {
+    try {
+        let provider = 'mtn';
+        if (network.includes('telecel') || network.includes('vod')) provider = 'vod';
+        if (network.includes('at') || network.includes('airtel')) provider = 'atl';
+        
+        let cleanPhone = phone.trim();
+        if (cleanPhone.startsWith('233')) cleanPhone = '0' + cleanPhone.slice(3);
+        
+        const response = await axios.post('https://api.paystack.co/charge', {
+            email: "customer@amgdata.com", 
+            amount: Math.round(amount * 100), 
+            currency: "GHS", 
+            metadata: metadata,
+            mobile_money: { phone: cleanPhone, provider: provider }
+        }, { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`, 'Content-Type': 'application/json' } });
+        
+        return response.data;
+    } catch (err) { 
+        console.error("🔴 STK Push Error:", err.response?.data || err.message);
+        return null; 
+    }
+};
+
+// --- UPDATED: TRIGGER FLOW ---
 const triggerMoMoFlow = async (sender, state) => {
     const { plan, payer, recipient } = state;
     await client.sendMessage(sender, `⏳ Requesting GHS ${plan.selling_price} from *${payer}*...`);
     
     const metadata = { type: 'DIRECT_PURCHASE', customer_phone: recipient, payer_phone: payer, plan_id: plan.idata_plan_id, network_id: plan.network_name.toLowerCase() };
     
+    // 1. Generate Web Link Fallback
     const pay = await axios.post('https://api.paystack.co/transaction/initialize', {
         email: 'customer@amgdata.com', amount: Math.round(plan.selling_price * 100), currency: "GHS", metadata, channels: ['mobile_money', 'card']
     }, { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` } }).catch(() => null);
 
     const checkoutUrl = pay?.data?.data?.authorization_url || null;
-    const paystackReference = pay?.data?.data?.reference || 'PROMPT_BUY';
+    let referenceToSave = pay?.data?.data?.reference || 'PROMPT_BUY';
 
+    // 2. Trigger the actual MoMo Prompt (STK Push)
+    const charge = await chargeMoMoDirect(payer, plan.selling_price, plan.network_name.toLowerCase(), metadata);
+    
+    // 3. Fix: We MUST save the STK Push reference so the Webhook finds it when the user approves on their phone
+    if (charge && charge.data && charge.data.reference) {
+        referenceToSave = charge.data.reference;
+    }
+
+    // 4. Save to Database
     await db.query(
         'INSERT INTO transactions (user_phone, amount, network, data_volume, status, platform, reference, checkout_url, plan_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
-        [payer, plan.selling_price, plan.network_name, plan.plan_name, 'PROCESSING', 'WHATSAPP', paystackReference, checkoutUrl, plan.id]
+        [payer, plan.selling_price, plan.network_name, plan.plan_name, 'PROCESSING', 'WHATSAPP', referenceToSave, checkoutUrl, plan.id]
     );
     
-    await client.sendMessage(sender, `🔔 *Payment Instructions*\n1. Authorize prompt.\n2. Or pay here: ${checkoutUrl || 'N/A'}`);
+    await client.sendMessage(sender, `🔔 *Payment Instructions*\n1. Authorize the prompt on your phone.\n2. *MTN:* Dial *170# -> 6 -> 3* (Approvals) if no prompt appears.\n3. Or pay via web here: ${checkoutUrl || 'N/A'}`);
     await clearState(sender);
 };
 
@@ -210,7 +246,9 @@ client.on('message', async (msg) => {
             state.recipient = userMessage === '1' ? formattedSender : userMessage;
             state.step = 'ENTERING_PAYER';
             await setState(sender, state);
-            return client.sendMessage(sender, `📱 Data for: *${state.recipient}*\n\nWhich number is *PAYING*?\n\n*1.* Same as recipient\n*OR* Type the MoMo number:\n\n*#* Back  |  *0* Cancel`);
+            
+            // FIXED TEXT HERE:
+            return client.sendMessage(sender, `📱 Data for: *${state.recipient}*\n\nWhich number is *PAYING*?\n\n*1.* My number (${formattedSender})\n*OR* Type the MoMo number:\n\n*#* Back  |  *0* Cancel`);
         }
 
         // --- STEP 5: ENTERING PAYER ---
@@ -255,7 +293,9 @@ client.on('message', async (msg) => {
             if (userMessage === '#') {
                 state.step = 'ENTERING_PAYER';
                 await setState(sender, state);
-                return client.sendMessage(sender, `📱 Data for: *${state.recipient}*\n\nWhich number is *PAYING*?\n\n*1.* Same as recipient\n*OR* Type the MoMo number:\n\n*#* Back  |  *0* Cancel`);
+                
+                // FIXED TEXT HERE:
+                return client.sendMessage(sender, `📱 Data for: *${state.recipient}*\n\nWhich number is *PAYING*?\n\n*1.* My number (${formattedSender})\n*OR* Type the MoMo number:\n\n*#* Back  |  *0* Cancel`);
             }
 
             if (userMessage === '1' && state.hasEnoughBalance) {
