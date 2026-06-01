@@ -29,98 +29,46 @@ app.use((req, res, next) => {
 // ==========================================
 //        1. DATABASE SETUP
 // ==========================================
-const db = new Pool({
-    connectionString: process.env.DATABASE_URL,
-});
+// const db = new Pool({
+//     connectionString: process.env.DATABASE_URL,
+// });
 
-db.connect((err) => {
-    if (err) console.error('Database connection error!', err.stack);
-    else console.log('Successfully connected to the Database!');
-});
+// db.connect((err) => {
+//     if (err) console.error('Database connection error!', err.stack);
+//     else console.log('Successfully connected to the Database!');
+// });
 
 // ==========================================
 //        2. HELPER FUNCTIONS
 // ==========================================
 
-async function getOrCreateUser(phone) {
-    let cleanPhone = phone.trim();
-    if (cleanPhone.startsWith('233')) cleanPhone = '0' + cleanPhone.slice(3);
-
-    try {
-        let userResult = await db.query('SELECT * FROM users WHERE phone_number = $1', [cleanPhone]);
-        if (userResult.rows.length > 0) {
-            return userResult.rows[0];
-        } else {
-            console.log(`New user created: ${cleanPhone}`);
-            let newUser = await db.query(
-                'INSERT INTO users (phone_number, wallet_balance) VALUES ($1, $2) RETURNING *', 
-                [cleanPhone, 0.00]
-            );
-            return newUser.rows[0];
-        }
-    } catch (err) {
-        console.error("DB Error:", err);
-        throw err;
-    }
-}
-
-const startPaystackPayment = async (email, amount, metadata) => {
-    try {
-        // Use payer_phone if available, otherwise use customer_phone
-        let phoneToClean = metadata.payer_phone || metadata.customer_phone || "";
-        
-        let phone = phoneToClean.trim();
-        if (phone.startsWith('0')) phone = '233' + phone.slice(1);
-
-        const response = await axios.post('https://api.paystack.co/transaction/initialize', {
-            email: email,
-            amount: Math.round(amount * 100),
-            currency: "GHS",
-            metadata: metadata,
-            channels: ['mobile_money', 'card'] 
-        }, {
-            headers: { 
-                Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
-                'Content-Type': 'application/json'
-            }
-        });
-        return response.data;
-    } catch (err) {
-        console.error("🔴 Paystack Init Error:", err.response?.data || err.message);
-        return null;
-    }
-};
-
 // FORCES DIRECT MOMO PROMPT (STK PUSH) ON PHONE
 const chargeMoMoDirect = async (phone, amount, network, metadata) => {
     try {
-        let provider = 'mtn';
-        if (network.includes('telecel') || network.includes('vod')) provider = 'vod';
-        if (network.includes('at') || network.includes('airtel')) provider = 'atl';
+        let provider = 'mtn-gh'; // Use standard Paystack provider codes
+        if (network.toLowerCase().includes('telecel') || network.toLowerCase().includes('vod')) provider = 'vodafone-gh';
+        if (network.toLowerCase().includes('at') || network.toLowerCase().includes('airtel')) provider = 'tigo-gh';
 
         let cleanPhone = phone.trim();
         if (cleanPhone.startsWith('233')) cleanPhone = '0' + cleanPhone.slice(3);
 
-        console.log(`⚡ FORCING DIRECT STK PUSH: ${provider} on ${cleanPhone} for GHS ${amount}`);
-
         const response = await axios.post('https://api.paystack.co/charge', {
             email: "customer@amgdata.com",
-            amount: Math.round(amount * 100), 
+            amount: Math.round(amount * 100),
             currency: "GHS",
             metadata: metadata,
-            mobile_money: {
-                phone: cleanPhone,
-                provider: provider
-            }
+            mobile_money: { phone: cleanPhone, provider: provider }
         }, {
             headers: { 
                 Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
                 'Content-Type': 'application/json'
             }
         });
-
+        
+        console.log("✅ Charge Response:", response.data);
         return response.data;
     } catch (err) {
+        // THIS LOG IS CRITICAL
         console.error("🔴 Paystack Charge API Error:", err.response?.data || err.message);
         return null;
     }
@@ -217,15 +165,19 @@ app.post('/api/user/set-pin', async (req, res) => {
 app.get('/api/history/:phone', async (req, res) => {
     try {
         let phone = req.params.phone.trim();
-        // Force conversion to '0...' format if it came in as '233...'
+        // Remove 233 and add 0 to ensure match
         if (phone.startsWith('233')) phone = '0' + phone.slice(3);
         
+        // Use a wildcard match just to see if data exists in the table at all
         const history = await db.query(
-            'SELECT * FROM transactions WHERE user_phone = $1 ORDER BY created_at DESC LIMIT 20', 
-            [phone]
+            'SELECT * FROM transactions WHERE user_phone LIKE $1 ORDER BY created_at DESC LIMIT 20', 
+            ['%' + phone.slice(-9)] // Matches last 9 digits to be safe
         );
         res.json(history.rows);
-    } catch (err) { res.status(500).json({ error: "Failed to fetch history" }); }
+    } catch (err) { 
+        console.error("History Error:", err);
+        res.status(500).json({ error: "Failed to fetch history" }); 
+    }
 });
 
 app.post('/api/topup', async (req, res) => {
