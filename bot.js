@@ -7,7 +7,7 @@ const qrcode = require('qrcode-terminal');
 const axios = require('axios');
 const { sendDataRoundRobin } = require('./providers');
 const { db, getOrCreateUser } = require('./helpers');
-const { setState, getState, clearState, setLock, releaseLock,} = require('./redisClient');
+const { setState, getState, clearState, setLock, releaseLock, setRecipientCooldown} = require('./redisClient');
 
 const lidCache = {};
 
