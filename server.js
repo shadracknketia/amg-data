@@ -165,17 +165,32 @@ app.post('/api/user/set-pin', async (req, res) => {
 app.get('/api/history/:phone', async (req, res) => {
     try {
         let phone = req.params.phone.trim();
-        // Remove 233 and add 0 to ensure match
         if (phone.startsWith('233')) phone = '0' + phone.slice(3);
         
-        // Use a wildcard match just to see if data exists in the table at all
-        const history = await db.query(
-            'SELECT * FROM transactions WHERE user_phone LIKE $1 ORDER BY created_at DESC LIMIT 20', 
-            ['%' + phone.slice(-9)] // Matches last 9 digits to be safe
-        );
+        console.log(`📡 Fetching history for: ${phone}`);
+
+        const history = await db.query(`
+            SELECT 
+                id,
+                user_phone,
+                recipient_phone,
+                amount,
+                network,
+                data_volume,
+                status,
+                platform,
+                reference,
+                plan_id,
+                TO_CHAR(created_at, 'DD Mon, hh:mi AM') as formatted_date
+            FROM transactions 
+            WHERE user_phone = $1 
+            ORDER BY created_at DESC 
+            LIMIT 20
+        `, [phone]);
+
         res.json(history.rows);
     } catch (err) { 
-        console.error("History Error:", err);
+        console.error("🔴 History API Error:", err);
         res.status(500).json({ error: "Failed to fetch history" }); 
     }
 });
@@ -244,8 +259,8 @@ app.post('/api/purchase-wallet', async (req, res) => {
 
         if (result.success) {
             await db.query(
-                'INSERT INTO transactions (user_phone, amount, network, data_volume, status, platform, provider, provider_order_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
-                [phone, cost, plan.network_name, plan.plan_name, 'PROCESSING', 'APP', result.provider, result.order_id]
+                'INSERT INTO transactions (user_phone, recipient_phone, amount, network, data_volume, status, platform, provider, provider_order_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
+                [phone, recipient, cost, plan.network_name, plan.plan_name, 'PROCESSING', 'APP', result.provider, result.order_id]
             );
             return res.json({ success: true, message: "Order placed! Processing..." });
         
@@ -297,8 +312,8 @@ app.post('/api/purchase-direct', async (req, res) => {
             if (charge && charge.status) {
                 // --- FIXED: MARK AS PROCESSING, NOT SUCCESS ---
                 await db.query(
-                    'INSERT INTO transactions (user_phone, amount, network, data_volume, status, platform, reference, checkout_url, plan_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
-                    [payer, plan.selling_price, plan.network_name, plan.plan_name, 'PROCESSING', 'MOMO', charge.data.reference, checkoutUrl, plan_id]
+                    'INSERT INTO transactions (user_phone, recipient_phone, amount, network, data_volume, status, platform, reference, checkout_url, plan_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
+                    [payer, recipient, plan.selling_price, plan.network_name, plan.plan_name, 'PROCESSING', 'MOMO', paystackReference, checkoutUrl, plan_id]
                 );
 
                 res.json({ success: true, message: "Prompt sent!", checkout_url: checkoutUrl });

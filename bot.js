@@ -105,8 +105,8 @@ const triggerMoMoFlow = async (sender, state) => {
 
     // 4. Save to Database
     await db.query(
-        'INSERT INTO transactions (user_phone, amount, network, data_volume, status, platform, reference, checkout_url, plan_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
-        [payer, plan.selling_price, plan.network_name, plan.plan_name, 'PROCESSING', 'WHATSAPP', referenceToSave, checkoutUrl, plan.id]
+        'INSERT INTO transactions (user_phone, recipient_phone, amount, network, data_volume, status, platform, reference, checkout_url, plan_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
+        [payer, recipient, plan.selling_price, plan.network_name, plan.plan_name, 'PROCESSING', 'WHATSAPP', referenceToSave, checkoutUrl, plan.id]
     );
     
     await client.sendMessage(sender, `🔔 *Payment Instructions*\n1. Authorize the prompt on your phone.\n2. *MTN:* Dial *170# -> 6 -> 3* (Approvals) if no prompt appears.\n3. Or pay via web here: ${checkoutUrl || 'N/A'}`);
@@ -357,8 +357,8 @@ client.on('message', async (msg) => {
                     
                     if (res.success) {
                         await db.query(
-                            'INSERT INTO transactions (user_phone, amount, network, data_volume, status, platform, provider, provider_order_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
-                            [formattedSender, state.plan.selling_price, state.plan.network_name, state.plan.plan_name, 'PROCESSING', 'WHATSAPP', res.provider, res.order_id]
+                            'INSERT INTO transactions (user_phone, recipient_phone, amount, network, data_volume, status, platform, provider, provider_order_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
+                            [formattedSender, state.recipient, state.plan.selling_price, state.plan.network_name, state.plan.plan_name, 'PROCESSING', 'WHATSAPP', res.provider, res.order_id]
                         );
                         client.sendMessage(sender, `✅ *Success!* Order sent to provider.`);
                     } else {
