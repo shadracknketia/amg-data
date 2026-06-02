@@ -10,7 +10,7 @@ const crypto = require('crypto');
 const { sendDataRoundRobin } = require('./providers'); // Rotating providers engine
 const cron = require('node-cron'); 
 const { db, getOrCreateUser } = require('./helpers');
-const { setState, getState, clearState } = require('./redisClient');
+const { setState, getState, clearState, setRecipientCooldown } = require('./redisClient');
 
 const app = express();
 app.use(cors());
@@ -218,6 +218,15 @@ app.post('/api/purchase-wallet', async (req, res) => {
         const { plan_id, recipient, phone: userPhone } = req.body;
         phone = userPhone;
 
+        // 🛡️ NEW: TELCO SPAM PROTECTION FOR APP
+        const canProceed = await setRecipientCooldown(recipient, 5);
+        if (!canProceed) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "Spam Protection: Please wait 5 minutes before sending data to this specific number again to prevent network failure." 
+            });
+        }
+
         const planRes = await db.query('SELECT * FROM data_plans WHERE idata_plan_id = $1', [plan_id]);
         if (planRes.rows.length === 0) return res.status(404).json({ success: false, message: "Plan not found" });
         
@@ -234,7 +243,6 @@ app.post('/api/purchase-wallet', async (req, res) => {
         const result = await sendDataRoundRobin(plan.network_name.toLowerCase(), recipient, plan.idata_plan_id);
 
         if (result.success) {
-            // --- FIXED: MARK AS PROCESSING, NOT SUCCESS ---
             await db.query(
                 'INSERT INTO transactions (user_phone, amount, network, data_volume, status, platform, provider, provider_order_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
                 [phone, cost, plan.network_name, plan.plan_name, 'PROCESSING', 'APP', result.provider, result.order_id]
@@ -242,13 +250,19 @@ app.post('/api/purchase-wallet', async (req, res) => {
             return res.json({ success: true, message: "Order placed! Processing..." });
         
         } else {
-            throw new Error(result.error || "Provider failed");
+            // 🛡️ SMART ERROR MASKING FOR APP
+            let apiError = result.error || result.message || "Provider failed";
+            if (apiError.toLowerCase().includes('balance') || apiError.toLowerCase().includes('fund')) {
+                apiError = "Network nodes are currently busy.";
+                console.error("🚨 ADMIN ALERT: Your iData API Balance is too low!");
+            }
+            throw new Error(apiError); // This triggers the catch block to refund and send the error to the App
         }
     } catch (err) {
         if (cost > 0 && phone !== '') {
             await db.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE phone_number = $2', [cost, phone]);
         }
-        res.status(500).json({ success: false, message: "Transaction failed. Wallet refunded." });
+        res.status(500).json({ success: false, message: err.message || "Transaction failed. Wallet refunded." });
     }
 });
 
@@ -616,16 +630,23 @@ app.get('/api/admin/fetch-packages', async (req, res) => {
 // --- 🔄 BACKGROUND SYNC (CRON JOB) ---
 cron.schedule('*/30 * * * *', async () => {
     try {
-        const pending = await db.query("SELECT * FROM transactions WHERE status = 'PROCESSING'");
-        console.log(`🔄 Cron Job: Syncing ${pending.rows.length} pending orders...`);
+        // 1. Fetch pending orders from ONLY the last 24 hours
+        const pending = await db.query(`
+            SELECT * FROM transactions 
+            WHERE status = 'PROCESSING' 
+            AND created_at >= NOW() - INTERVAL '24 HOURS'
+        `);
+        
+        console.log(`🔄 Cron Job: Syncing ${pending.rows.length} pending orders from the last 24 hours...`);
         
         for (let tx of pending.rows) {
             if (!tx.provider_order_id) continue; 
 
             try {
-                // Call iData's status checker
+                // Call iData's status checker (Added a 5-second timeout to prevent freezing)
                 const statusRes = await axios.get(`https://idatagh.com/wp-json/custom/v1/order-status?order_id=${tx.provider_order_id}`, {
-                    headers: { 'Authorization': `Bearer ${process.env.IDATA_API_KEY}`, 'Content-Type': 'application/json' }
+                    headers: { 'Authorization': `Bearer ${process.env.IDATA_API_KEY}`, 'Content-Type': 'application/json' },
+                    timeout: 5000 
                 });
 
                 if (statusRes.data.status === 'success') {
@@ -637,17 +658,41 @@ cron.schedule('*/30 * * * *', async () => {
                     } 
                     else if (orderStatus === 'Failed') {
                         await db.query("UPDATE transactions SET status = 'FAILED' WHERE id = $1", [tx.id]);
-                        if (tx.platform === 'APP') {
+                        // Refund ONLY if they used the App Wallet
+                        if (tx.platform === 'APP' || tx.platform === 'WHATSAPP') {
                             await db.query("UPDATE users SET wallet_balance = wallet_balance + $1 WHERE phone_number = $2", [tx.amount, tx.user_phone]);
                             console.log(`❌ Sync: Transaction ${tx.id} failed. Refunded GHS ${tx.amount}.`);
                         }
                     }
                 }
             } catch (err) { 
-                console.error(`Error syncing transaction ${tx.id}:`, err.message); 
+                console.error(`⚠️ Error syncing transaction ${tx.id}:`, err.message); 
             }
         }
-    } catch (err) { console.error("Cron Database Error:", err.message); }
+
+        // 2. AUTO-CLEANUP: Fail and refund orders stuck in processing for MORE than 24 hours
+        const cleanup = await db.query(`
+            UPDATE transactions 
+            SET status = 'FAILED' 
+            WHERE status = 'PROCESSING' 
+            AND created_at < NOW() - INTERVAL '24 HOURS'
+            RETURNING id, user_phone, amount, platform
+        `);
+
+        if (cleanup.rows.length > 0) {
+            console.log(`🧹 Auto-Cleanup: Found ${cleanup.rows.length} expired processing transactions.`);
+            for (let expiredTx of cleanup.rows) {
+                // Only refund wallet payments
+                if (expiredTx.platform === 'APP' || expiredTx.platform === 'WHATSAPP') {
+                    await db.query("UPDATE users SET wallet_balance = wallet_balance + $1 WHERE phone_number = $2", [expiredTx.amount, expiredTx.user_phone]);
+                    console.log(`🕒 Expired: Transaction ${expiredTx.id} automatically refunded (GHS ${expiredTx.amount}).`);
+                }
+            }
+        }
+
+    } catch (err) { 
+        console.error("🔴 Cron Database Error:", err.message); 
+    }
 });
 
 // TEST A SPECIFIC PROVIDER INDEPENDENTLY

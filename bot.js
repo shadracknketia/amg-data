@@ -7,7 +7,7 @@ const qrcode = require('qrcode-terminal');
 const axios = require('axios');
 const { sendDataRoundRobin } = require('./providers');
 const { db, getOrCreateUser } = require('./helpers');
-const { setState, getState, clearState } = require('./redisClient');
+const { setState, getState, clearState, setLock, releaseLock,} = require('./redisClient');
 
 const lidCache = {};
 
@@ -135,7 +135,6 @@ const client = new Client({
     }
 });
 
-// --- MAIN MESSAGE LOGIC ---
 // --- MAIN MESSAGE LOGIC ---
 client.on('message', async (msg) => {
     try {
@@ -307,51 +306,59 @@ client.on('message', async (msg) => {
             }
         }
 
-        // --- STEP 7: VERIFYING PIN ---
-        if (state.step === 'VERIFYING_PIN') {
-            if (userMessage === '#') {
-                state.step = 'CONFIRMING_ORDER';
-                await setState(sender, state);
-                
+        // --- STEP 7: VERIFYING PIN (WITH SPAM LOCK) ---
+        try {
+                // Must fetch user again to check the PIN correctly
                 const user = await getOrCreateUser(formattedSender);
-                const balance = parseFloat(user.wallet_balance || 0);
                 
-                let summary = `📝 *Summary*\n📦 *Bundle:* ${state.plan.network_name} ${state.plan.plan_name}\n📱 *Recipient:* ${state.recipient}\n💳 *Payer:* ${state.payer}\n💰 *Cost:* GHS ${state.plan.selling_price}\n\n`;
-                if (state.hasEnoughBalance) {
-                    summary += `*1.* ✅ Pay with AMG Wallet (GHS ${balance.toFixed(2)})\n*2.* 💳 Pay with MoMo Prompt\n`;
-                } else {
-                    summary += `*1.* 💳 Pay with MoMo Prompt\n`;
-                }
-                return client.sendMessage(sender, summary + `\n*#* Back  |  *0* Cancel`);
-            }
+                if (user.pin === userMessage) {
+                    
+                    // 1. 🛡️ TELCO SPAM PROTECTION: Check this FIRST before touching money!
+                    const canProceed = await setRecipientCooldown(state.recipient, 5);
+                    if (!canProceed) {
+                        await clearState(sender);
+                        return client.sendMessage(sender, `⏳ *Telco Spam Protection Active*\n\nTo prevent the network from eating your funds without delivering the data, please wait *5 minutes* before sending another bundle to *${state.recipient}*.\n\nYour wallet has *NOT* been deducted.`);
+                    }
 
-            // Must fetch user again to check the PIN correctly
-            const user = await getOrCreateUser(formattedSender);
-            
-            if (user.pin === userMessage) {
-                // Deduct balance
-                await db.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE phone_number = $2', [state.plan.selling_price, formattedSender]);
-                
-                // Call Provider
-                const res = await sendDataRoundRobin(state.plan.network_name.toLowerCase(), state.recipient, state.plan.idata_plan_id);
-                
-                if (res.success) {
-                    // 🧾 CRITICAL FIX: Save the transaction so it shows in history and the Cron Job can track it!
-                    await db.query(
-                        'INSERT INTO transactions (user_phone, amount, network, data_volume, status, platform, provider, provider_order_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
-                        [formattedSender, state.plan.selling_price, state.plan.network_name, state.plan.plan_name, 'PROCESSING', 'WHATSAPP', res.provider, res.order_id]
-                    );
-                    client.sendMessage(sender, `✅ *Success!* Order sent to provider. It will reflect shortly.`);
+                    // 2. 💰 Deduct balance IMMEDIATELY
+                    await db.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE phone_number = $2', [state.plan.selling_price, formattedSender]);
+                    
+                    // 3. 📡 Call Provider API
+                    const res = await sendDataRoundRobin(state.plan.network_name.toLowerCase(), state.recipient, state.plan.idata_plan_id);
+                    
+                    if (res.success) {
+                        // 4. ✅ Save the transaction
+                        await db.query(
+                            'INSERT INTO transactions (user_phone, amount, network, data_volume, status, platform, provider, provider_order_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+                            [formattedSender, state.plan.selling_price, state.plan.network_name, state.plan.plan_name, 'PROCESSING', 'WHATSAPP', res.provider, res.order_id]
+                        );
+                        client.sendMessage(sender, `✅ *Success!* Order sent to provider. It will reflect shortly.`);
+                    } else {
+                        // 5. ⚠️ Auto Refund on API Failure
+                        await db.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE phone_number = $2', [state.plan.selling_price, formattedSender]);
+                        
+                        // Smart Error Masking
+                        let errorMessage = "Delivery failed.";
+                        const apiError = res.error || res.message || "";
+                        if (apiError.toLowerCase().includes('balance') || apiError.toLowerCase().includes('fund')) {
+                            errorMessage = "Network nodes are currently busy.";
+                            console.error("🚨 ADMIN ALERT: Your iData API Balance is too low!");
+                        } else if (apiError) {
+                            errorMessage = apiError;
+                        }
+                        client.sendMessage(sender, `⚠️ *${errorMessage}*\n\nYour GHS ${state.plan.selling_price} has been instantly refunded to your AMG Wallet.`);
+                    }
                 } else {
-                    // Auto Refund
-                    await db.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE phone_number = $2', [state.plan.selling_price, formattedSender]);
-                    client.sendMessage(sender, "⚠️ Delivery failed. Refunded to wallet.");
+                    client.sendMessage(sender, "❌ Incorrect PIN.");
                 }
-            } else {
-                client.sendMessage(sender, "❌ Incorrect PIN.");
+
+                // Clear the state so they start fresh next time
+                await clearState(sender);
+
+            } finally {
+                // 🔓 ALWAYS RELEASE THE SESSION LOCK WHEN FINISHED
+                await releaseLock(sender);
             }
-            await clearState(sender);
-        }
 
     } catch (err) {
         console.error("🔴 Bot Error:", err);
