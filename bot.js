@@ -329,12 +329,23 @@ client.on('message', async (msg) => {
             const user = await getOrCreateUser(formattedSender);
             
             if (user.pin === userMessage) {
+                // Deduct balance
                 await db.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE phone_number = $2', [state.plan.selling_price, formattedSender]);
+                
+                // Call Provider
                 const res = await sendDataRoundRobin(state.plan.network_name.toLowerCase(), state.recipient, state.plan.idata_plan_id);
-                if (res.success) client.sendMessage(sender, `✅ *Success!* Order delivered.`);
-                else {
+                
+                if (res.success) {
+                    // 🧾 CRITICAL FIX: Save the transaction so it shows in history and the Cron Job can track it!
+                    await db.query(
+                        'INSERT INTO transactions (user_phone, amount, network, data_volume, status, platform, provider, provider_order_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+                        [formattedSender, state.plan.selling_price, state.plan.network_name, state.plan.plan_name, 'PROCESSING', 'WHATSAPP', res.provider, res.order_id]
+                    );
+                    client.sendMessage(sender, `✅ *Success!* Order sent to provider. It will reflect shortly.`);
+                } else {
+                    // Auto Refund
                     await db.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE phone_number = $2', [state.plan.selling_price, formattedSender]);
-                    client.sendMessage(sender, "⚠️ Failed. Refunded to wallet.");
+                    client.sendMessage(sender, "⚠️ Delivery failed. Refunded to wallet.");
                 }
             } else {
                 client.sendMessage(sender, "❌ Incorrect PIN.");

@@ -375,25 +375,32 @@ app.post('/api/report-transaction', async (req, res) => {
     }
 });
 
-// 9. CANCEL / REFUND A TRANSACTION
+// 9. SECURED CANCEL / REFUND A TRANSACTION
 app.post('/api/cancel-transaction', async (req, res) => {
     try {
         const { transaction_id, phone } = req.body;
-        console.log(`Cancelling transaction: ${transaction_id} for ${phone}`);
-
+        
         const txRes = await db.query('SELECT * FROM transactions WHERE id = $1 AND user_phone = $2', [transaction_id, phone]);
         if (txRes.rows.length === 0) return res.status(404).json({ success: false, message: "Not found" });
         
         const tx = txRes.rows[0];
 
         if (tx.status === 'PROCESSING') {
+            // 🛡️ CRITICAL FIX: Prevent users from cancelling orders already sent to iData
+            if (tx.provider_order_id) {
+                return res.status(400).json({ 
+                    success: false, 
+                    message: "Order is already with the network provider. It cannot be cancelled. Please wait for sync." 
+                });
+            }
+
+            // Only allow cancellation if it hasn't been sent to a provider (e.g. failed MoMo prompt)
             await db.query("UPDATE transactions SET status = 'FAILED' WHERE id = $1", [transaction_id]);
             
-            // Refund if they used App Wallet
             if (tx.platform === 'APP') {
                 await db.query("UPDATE users SET wallet_balance = wallet_balance + $1 WHERE phone_number = $2", [tx.amount, phone]);
             }
-            res.json({ success: true, message: "Cancelled." });
+            res.json({ success: true, message: "Transaction Cancelled & Refunded." });
         } else {
             res.status(400).json({ success: false, message: "Cannot cancel this transaction." });
         }
