@@ -466,6 +466,23 @@ app.post('/api/admin/resolve-dispute', async (req, res) => {
     }
 });
 
+app.post('/api/user/update-pin', async (req, res) => {
+    const { phone, old_pin, new_pin } = req.body;
+    try {
+        // 1. Verify old PIN first
+        const userRes = await db.query('SELECT pin FROM users WHERE phone_number = $1', [phone]);
+        if (userRes.rows.length === 0 || userRes.rows[0].pin !== old_pin) {
+            return res.status(401).json({ success: false, message: "Incorrect current PIN" });
+        }
+
+        // 2. Update to new PIN
+        await db.query('UPDATE users SET pin = $1 WHERE phone_number = $2', [new_pin, phone]);
+        res.json({ success: true, message: "PIN updated successfully!" });
+    } catch (err) {
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
 // ==========================================
 //    13. BRANDED WHATSAPP BOT LANDING PAGE
 // ==========================================
