@@ -1,5 +1,6 @@
 // providers.js
 const axios = require('axios');
+const FORCE_PROVIDER = 'hubnet';
 
 const providers = [
     { 
@@ -44,38 +45,65 @@ function formatPayload(providerName, network, phone, plan_id, plan_volume_mb) {
 let currentIndex = 0;
 
 async function sendDataRoundRobin(network, phone, plan_id, plan_volume_mb) {
-    // 1. ALWAYS rotate, regardless of success or failure
-    const provider = providers[currentIndex];
-    currentIndex = (currentIndex + 1) % providers.length; 
+    // Determine provider
+    let provider = FORCE_PROVIDER 
+        ? providers.find(p => p.name === FORCE_PROVIDER) 
+        : providers[currentIndex];
+        
+    if (!FORCE_PROVIDER) currentIndex = (currentIndex + 1) % providers.length;
 
-    console.log(`🚀 Primary Provider Assigned: ${provider.name}`);
+    console.log(`🚀 Attempting delivery via: ${provider.name}`);
 
     try {
         let result = await executeProviderCall(provider, network, phone, plan_id, plan_volume_mb);
+        
+        if (result && result.success) return result;
 
-        if (result.success) {
-            return result; 
-        } else {
-            console.warn(`⚠️ ${provider.name} failed. Attempting backup...`);
-            // If the "assigned" provider fails, we try the other one immediately
-            return await tryFallback(network, phone, plan_id, plan_volume_mb, provider.name);
-        }
+        // If primary failed, ALWAYS try fallback
+        console.warn(`⚠️ ${provider.name} returned failure. Trying fallback...`);
+        return await tryFallback(network, phone, plan_id, plan_volume_mb, provider.name);
     } catch (err) {
-        console.error(`🔴 ${provider.name} crashed. Attempting backup...`);
+        console.error(`🔴 ${provider.name} physical crash:`, err.message);
         return await tryFallback(network, phone, plan_id, plan_volume_mb, provider.name);
     }
 }
+
+async function tryFallback(network, phone, plan_id, plan_volume_mb, failedProviderName) {
+    const backup = providers.find(p => p.name !== failedProviderName);
+    if (!backup) return { success: false, error: "No backup provider found." };
+
+    console.log(`🔄 Failover to: ${backup.name}`);
+    try {
+        return await executeProviderCall(backup, network, phone, plan_id, plan_volume_mb);
+    } catch (e) {
+        console.error(`🔴 Backup ${backup.name} also failed:`, e.message);
+        return { success: false, error: "Both providers failed." };
+    }
+}
+
 
 async function executeProviderCall(provider, network, phone, plan_id, plan_volume_mb) {
     if (provider.name === 'hubnet') {
         const netMap = { 'mtn': 'mtn', 'telecel': 'telecel', 'at': 'at' };
         const url = `${provider.base_url}${netMap[network.toLowerCase()] || 'mtn'}-new-transaction`;
-        const res = await axios.post(url, {
-            phone: phone, 
-            volume: plan_volume_mb.toString(), 
-            reference: 'TCX-' + Date.now() 
-        }, { headers: { 'token': `Bearer ${provider.key}` } });
-        return { success: res.data.message === '0000', provider: 'hubnet', order_id: res.data.transaction_id };
+        
+        console.log(`[DEBUG] Hubnet URL: ${url}`); // Let's see if the URL is right
+        
+        try {
+            const res = await axios.post(url, {
+                phone: phone,
+                volume: plan_volume_mb.toString(),
+                reference: 'TCX-' + Date.now()
+            }, { 
+                headers: { 'token': `Bearer ${provider.key}`, 'Content-Type': 'application/json' } 
+            });
+            return { success: res.data.message === '0000', provider: 'hubnet', order_id: res.data.transaction_id };
+        } catch (err) {
+            // THIS WILL SHOW US THE EXACT ERROR
+            console.error(`🔴 HUBNET API DEBUG ERROR:`, err.response?.data || err.message);
+            throw err; // Re-throw to trigger the fallback
+        }
+
     } else {
         // iData Logic
         const res = await axios.post(provider.url, {
@@ -87,25 +115,25 @@ async function executeProviderCall(provider, network, phone, plan_id, plan_volum
     }
 }
 
-// Fallback loop
-async function tryFallback(list, network, phone, plan_id, plan_volume_mb, failedProviderName) {
-    for (let p of list) {
-        if (p.name === failedProviderName) continue;
+// // Fallback loop
+// async function tryFallback(list, network, phone, plan_id, plan_volume_mb, failedProviderName) {
+//     for (let p of list) {
+//         if (p.name === failedProviderName) continue;
         
-        try {
-            let url = p.url || `${p.base_url}${network.toLowerCase()}-new-transaction`;
-            const payload = formatPayload(p.name, network, phone, plan_id, plan_volume_mb);
+//         try {
+//             let url = p.url || `${p.base_url}${network.toLowerCase()}-new-transaction`;
+//             const payload = formatPayload(p.name, network, phone, plan_id, plan_volume_mb);
 
-            const response = await axios.post(url, payload, {
-                headers: { 'Authorization': `Bearer ${p.key}`, 'token': `Bearer ${p.key}`, 'Content-Type': 'application/json' }
-            });
+//             const response = await axios.post(url, payload, {
+//                 headers: { 'Authorization': `Bearer ${p.key}`, 'token': `Bearer ${p.key}`, 'Content-Type': 'application/json' }
+//             });
 
-            if (response.data && (response.data.status === 'success' || response.data.code === '0000' || response.data.message === '0000')) {
-                return { success: true, order_id: response.data.order_id || response.data.transaction_id, provider: p.name };
-            }
-        } catch (e) { continue; }
-    }
-    return { success: false, error: "All providers failed." };
-}
+//             if (response.data && (response.data.status === 'success' || response.data.code === '0000' || response.data.message === '0000')) {
+//                 return { success: true, order_id: response.data.order_id || response.data.transaction_id, provider: p.name };
+//             }
+//         } catch (e) { continue; }
+//     }
+//     return { success: false, error: "All providers failed." };
+// }
 
 module.exports = { sendDataRoundRobin };
