@@ -255,7 +255,12 @@ app.post('/api/purchase-wallet', async (req, res) => {
         await db.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE phone_number = $2', [cost, phone]);
         
         // 2. Fulfill using rotating provider
-        const result = await sendDataRoundRobin(plan.network_name.toLowerCase(), recipient, plan.idata_plan_id);
+        const result = await sendDataRoundRobin(
+            plan.network_name.toLowerCase(), 
+            recipient, 
+            plan.idata_plan_id, 
+            plan.size_mb // Passed from your database plan
+        );
 
         if (result.success) {
             await db.query(
@@ -285,6 +290,12 @@ app.post('/api/purchase-direct', async (req, res) => {
     try {
         const { payer, recipient, plan_id, network, method } = req.body;
         
+        // 🛡️ 1. ADDED: SPAM PROTECTION
+        const canProceed = await setRecipientCooldown(recipient, 5);
+        if (!canProceed) {
+            return res.status(400).json({ success: false, message: "Please wait 5 minutes before sending data to this number again." });
+        }
+        
         const planRes = await db.query('SELECT * FROM data_plans WHERE idata_plan_id = $1', [plan_id]);
         if (planRes.rows.length === 0) return res.status(404).json({ success: false, message: "Plan not found" });
         const plan = planRes.rows[0];
@@ -298,32 +309,25 @@ app.post('/api/purchase-direct', async (req, res) => {
         };
 
         let checkoutUrl = null;
-        let paystackReference = '';
+        let reference = '';
 
         if (method === 'MOMO_WEB') {
-            // MODE A: Initialize a web transaction & get its reference
             const payment = await startPaystackPayment('customer@amgdata.com', plan.selling_price, metadata);
-            checkoutUrl = payment && payment.status ? payment.data.authorization_url : null;
-            paystackReference = payment && payment.status ? payment.data.reference : 'WEB_BUY';
+            checkoutUrl = payment?.status ? payment.data.authorization_url : null;
+            reference = payment?.status ? payment.data.reference : 'WEB_BUY';
         } else {
-            // 2. Trigger the real STK Push
             const charge = await chargeMoMoDirect(payer, plan.selling_price, network, metadata);
-            
-            if (charge && charge.status) {
-                // --- FIXED: MARK AS PROCESSING, NOT SUCCESS ---
-                await db.query(
-                    'INSERT INTO transactions (user_phone, recipient_phone, amount, network, data_volume, status, platform, reference, checkout_url, plan_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
-                    [payer, recipient, plan.selling_price, plan.network_name, plan.plan_name, 'PROCESSING', 'MOMO', paystackReference, checkoutUrl, plan_id]
-                );
-
-                res.json({ success: true, message: "Prompt sent!", checkout_url: checkoutUrl });
+            if (!charge || !charge.status) {
+                return res.status(400).json({ success: false, message: "MoMo prompt failed." });
             }
+            reference = charge.data.reference;
         }
 
-        // --- 🧾 FIXED: WE NOW SAVE THE CORRECT MATCHING REFERENCE ---
+        // 🧾 2. FIXED: INSERT ONLY ONCE. 
+        // Whether it's Web or STK Push, we insert the PROCESSING record here.
         await db.query(
-            'INSERT INTO transactions (user_phone, amount, network, data_volume, status, platform, reference, checkout_url, plan_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
-            [payer, plan.selling_price, plan.network_name, plan.plan_name, 'PROCESSING', 'MOMO', paystackReference, checkoutUrl, plan_id]
+            'INSERT INTO transactions (user_phone, recipient_phone, amount, network, data_volume, status, platform, reference, checkout_url, plan_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
+            [payer, recipient, plan.selling_price, plan.network_name, plan.plan_name, 'PROCESSING', 'MOMO', reference, checkoutUrl, plan_id]
         );
 
         res.json({ 

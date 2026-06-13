@@ -353,7 +353,12 @@ client.on('message', async (msg) => {
                     await db.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE phone_number = $2', [state.plan.selling_price, formattedSender]);
                     
                     // 📡 Call Provider
-                    const res = await sendDataRoundRobin(state.plan.network_name.toLowerCase(), state.recipient, state.plan.idata_plan_id);
+                    const res = await sendDataRoundRobin(
+                        state.plan.network_name.toLowerCase(), 
+                        state.recipient, 
+                        state.plan.idata_plan_id, 
+                        state.plan.size_mb
+                    );
                     
                     if (res.success) {
                         await db.query(
