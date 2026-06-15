@@ -259,7 +259,8 @@ app.post('/api/purchase-wallet', async (req, res) => {
             plan.network_name.toLowerCase(), 
             recipient, 
             plan.idata_plan_id, 
-            plan.size_mb // Passed from your database plan
+            plan.size_mb,
+            plan.swiftdata_plan_id
         );
 
         if (result.success) {
@@ -372,20 +373,35 @@ app.post('/payment/webhook', async (req, res) => {
         } else if (metadata.type === 'DIRECT_PURCHASE') {
             console.log(`Direct Purchase: Sending Plan to ${phone}...`);
             
-            // Fulfill the order
-            const result = await sendDataRoundRobin(metadata.network_id.toLowerCase(), phone, metadata.plan_id);
-            
-            if (result.success) {
-                // --- 🧾 FIXED: UPDATE THE EXISTING ROW INSTEAD OF INSERTING A NEW ONE ---
-                await db.query(
-                    'UPDATE transactions SET status = $1, provider = $2, provider_order_id = $3 WHERE reference = $4',
-                    ['SUCCESS', result.provider, result.order_id, reference]
-                );
-                console.log(`✅ Webhook: Updated Transaction Reference ${reference} to SUCCESS!`);
-            } else {
-                console.log("❌ Data delivery failed. Updating status to FAILED.");
-                // Update the existing row to FAILED
-                await db.query('UPDATE transactions SET status = $1 WHERE reference = $2', ['FAILED', reference]);
+            try {
+                // Fetch the full plan details from the database so we have size_mb and swiftdata_plan_id
+                const planRes = await db.query('SELECT * FROM data_plans WHERE idata_plan_id = $1', [metadata.plan_id]);
+                
+                if (planRes.rows.length > 0) {
+                    const plan = planRes.rows[0];
+                    
+                    // Fulfill the order with ALL 5 parameters
+                    const result = await sendDataRoundRobin(
+                        metadata.network_id.toLowerCase(), 
+                        phone, 
+                        metadata.plan_id,
+                        plan.size_mb,
+                        plan.swiftdata_plan_id
+                    );
+                    
+                    if (result.success) {
+                        await db.query(
+                            'UPDATE transactions SET status = $1, provider = $2, provider_order_id = $3 WHERE reference = $4',
+                            ['SUCCESS', result.provider, result.order_id, reference]
+                        );
+                        console.log(`✅ Webhook: Updated Transaction Reference ${reference} to SUCCESS!`);
+                    } else {
+                        console.log("❌ Data delivery failed. Updating status to FAILED.");
+                        await db.query('UPDATE transactions SET status = $1 WHERE reference = $2', ['FAILED', reference]);
+                    }
+                }
+            } catch (err) {
+                console.error("Webhook Fulfillment Error:", err);
             }
         }
     }

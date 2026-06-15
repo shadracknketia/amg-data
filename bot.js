@@ -357,7 +357,8 @@ client.on('message', async (msg) => {
                         state.plan.network_name.toLowerCase(), 
                         state.recipient, 
                         state.plan.idata_plan_id, 
-                        state.plan.size_mb
+                        state.plan.size_mb,
+                        state.plan.swiftdata_plan_id
                     );
                     
                     if (res.success) {

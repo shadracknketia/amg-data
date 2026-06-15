@@ -1,7 +1,13 @@
 // providers.js
 const axios = require('axios');
-const FORCE_PROVIDER = 'hubnet';
+const { db } = require('./helpers');
 
+// --- TESTING OVERRIDE ---
+// Set to 'swiftdata', 'hubnet', or 'idata' to force testing a specific provider.
+// Leave as null for normal Load Balancing.
+const FORCE_PROVIDER = null; 
+
+// --- PROVIDERS LIST ---
 const providers = [
     { 
         name: 'idata', 
@@ -10,130 +16,116 @@ const providers = [
     },
     { 
         name: 'hubnet', 
-        // Hubnet URL is dynamic, we will handle the network part in formatPayload or dynamically
         base_url: 'https://console.hubnet.app/live/api/context/business/transaction/',
         key: process.env.HUBNET_API_KEY 
+    },
+    {
+        name: 'swiftdata',
+        url: 'https://lsocdjpflecduumopijn.supabase.co/functions/v1/developer-api/payment/data',
+        key: process.env.SWIFTDATA_API_KEY
     }
 ];
-
-// Helper to format the payload correctly
-function formatPayload(providerName, network, phone, plan_id, plan_volume_mb) {
-    let net = network.toLowerCase();
-    
-    if (providerName === 'idata') {
-        if (net === 'at') net = 'airteltigo';
-        return {
-            "network": net,
-            "beneficiary": phone,
-            "pa_data-bundle-packages": plan_id.toString(), 
-            "webhook": "https://amg-data-api.duckdns.org/payment/webhook" 
-        };
-    } 
-    
-    if (providerName === 'hubnet') {
-        // Hubnet requires volume in MB (e.g., 2000 for 2GB)
-        return {
-            "phone": phone,
-            "volume": plan_volume_mb.toString(),
-            "reference": 'TCX-' + Math.random().toString(36).substring(2, 15).toUpperCase()
-        };
-    }
-    return {};
-}
 
 // Main Router (Round Robin)
 let currentIndex = 0;
 
-async function sendDataRoundRobin(network, phone, plan_id, plan_volume_mb) {
-    // Determine provider
-    let provider = FORCE_PROVIDER 
-        ? providers.find(p => p.name === FORCE_PROVIDER) 
-        : providers[currentIndex];
-        
+async function sendDataRoundRobin(network, phone, plan_id, plan_volume_mb, swiftdata_plan_id) {
+    let provider = FORCE_PROVIDER ? providers.find(p => p.name === FORCE_PROVIDER) : providers[currentIndex];
     if (!FORCE_PROVIDER) currentIndex = (currentIndex + 1) % providers.length;
 
-    console.log(`🚀 Attempting delivery via: ${provider.name}`);
+    console.log(`🚀 Primary Provider Assigned: ${provider.name}`);
 
     try {
-        let result = await executeProviderCall(provider, network, phone, plan_id, plan_volume_mb);
+        let result = await executeProviderCall(provider, network, phone, plan_id, plan_volume_mb, swiftdata_plan_id);
         
         if (result && result.success) return result;
 
-        // If primary failed, ALWAYS try fallback
-        console.warn(`⚠️ ${provider.name} returned failure. Trying fallback...`);
+        console.warn(`⚠️ ${provider.name} returned logical failure. Initiating failover...`);
         return await tryFallback(network, phone, plan_id, plan_volume_mb, provider.name);
     } catch (err) {
-        console.error(`🔴 ${provider.name} physical crash:`, err.message);
+        console.error(`🔴 ${provider.name} crashed. Initiating failover...`);
         return await tryFallback(network, phone, plan_id, plan_volume_mb, provider.name);
     }
 }
 
-async function tryFallback(network, phone, plan_id, plan_volume_mb, failedProviderName) {
-    const backup = providers.find(p => p.name !== failedProviderName);
-    if (!backup) return { success: false, error: "No backup provider found." };
-
-    console.log(`🔄 Failover to: ${backup.name}`);
-    try {
-        return await executeProviderCall(backup, network, phone, plan_id, plan_volume_mb);
-    } catch (e) {
-        console.error(`🔴 Backup ${backup.name} also failed:`, e.message);
-        return { success: false, error: "Both providers failed." };
+// --- MULTI-PROVIDER FAILOVER LOOP ---
+async function tryFallback(network, phone, plan_id, plan_volume_mb, swiftdata_plan_id, failedProviderName) {
+    const backupProviders = providers.filter(p => p.name !== failedProviderName);
+    for (let backup of backupProviders) {
+        try {
+            let result = await executeProviderCall(backup, network, phone, plan_id, plan_volume_mb, swiftdata_plan_id);
+            if (result && result.success) return result;
+            
+            console.warn(`⚠️ Backup ${backup.name} failed too. Trying next...`);
+        } catch (e) {
+            console.error(`🔴 Backup ${backup.name} crashed.`);
+        }
     }
+    
+    return { success: false, error: "All providers failed (iData, Hubnet, & SwiftData offline)." };
 }
 
-
-async function executeProviderCall(provider, network, phone, plan_id, plan_volume_mb) {
+// --- CORE API EXECUTION LOGIC ---
+async function executeProviderCall(provider, network, phone, plan_id, plan_volume_mb, swiftdata_plan_id) {
     if (provider.name === 'hubnet') {
         const netMap = { 'mtn': 'mtn', 'telecel': 'telecel', 'at': 'at' };
         const url = `${provider.base_url}${netMap[network.toLowerCase()] || 'mtn'}-new-transaction`;
         
-        console.log(`[DEBUG] Hubnet URL: ${url}`); // Let's see if the URL is right
-        
         try {
             const res = await axios.post(url, {
-                phone: phone,
-                volume: plan_volume_mb.toString(),
-                reference: 'TCX-' + Date.now()
-            }, { 
-                headers: { 'token': `Bearer ${provider.key}`, 'Content-Type': 'application/json' } 
-            });
+                phone: phone, 
+                volume: plan_volume_mb.toString(), 
+                reference: 'TCX-' + Date.now() 
+            }, { headers: { 'token': `Bearer ${provider.key}`, 'Content-Type': 'application/json' } });
+            
             return { success: res.data.message === '0000', provider: 'hubnet', order_id: res.data.transaction_id };
         } catch (err) {
-            // THIS WILL SHOW US THE EXACT ERROR
-            console.error(`🔴 HUBNET API DEBUG ERROR:`, err.response?.data || err.message);
-            throw err; // Re-throw to trigger the fallback
+            console.error(`[HUBNET ERROR]`, err.response?.data || err.message);
+            throw err;
+        }
+
+    } else if (provider.name === 'swiftdata') {
+        const idempotencyKey = 'SD-' + Date.now() + Math.floor(Math.random() * 1000);
+        
+        try {
+            const res = await axios.post(provider.url, {
+                // Use the new SwiftData ID. If it's null in DB, fallback to normal plan_id just in case
+                package_id: swiftdata_plan_id || plan_id.toString(), 
+                phone: phone,
+                request_id: idempotencyKey
+            }, { 
+                headers: { 
+                    'Authorization': `Bearer ${provider.key}`,
+                    'X-Idempotency-Key': idempotencyKey,
+                    'Content-Type': 'application/json'
+                } 
+            });
+            
+            return { success: res.data.success === true, provider: 'swiftdata', order_id: res.data.order_id };
+        } catch (err) {
+            console.error(`[SWIFTDATA ERROR]`, err.response?.data || err.message);
+            throw err;
         }
 
     } else {
         // iData Logic
-        const res = await axios.post(provider.url, {
-            "network": network,
-            "beneficiary": phone,
-            "pa_data-bundle-packages": plan_id.toString()
-        }, { headers: { 'Authorization': `Bearer ${provider.key}` } });
-        return { success: res.data.status === 'success', provider: 'idata', order_id: res.data.order_id };
+        try {
+            let net = network.toLowerCase();
+            if (net === 'at') net = 'airteltigo'; // iData specific network name formatting
+            
+            const res = await axios.post(provider.url, {
+                "network": net,
+                "beneficiary": phone,
+                "pa_data-bundle-packages": plan_id.toString(),
+                "webhook": "https://amg-data-api.duckdns.org/payment/webhook" 
+            }, { headers: { 'Authorization': `Bearer ${provider.key}` } });
+            
+            return { success: res.data.status === 'success', provider: 'idata', order_id: res.data.order_id };
+        } catch (err) {
+            console.error(`[IDATA ERROR]`, err.response?.data || err.message);
+            throw err;
+        }
     }
 }
-
-// // Fallback loop
-// async function tryFallback(list, network, phone, plan_id, plan_volume_mb, failedProviderName) {
-//     for (let p of list) {
-//         if (p.name === failedProviderName) continue;
-        
-//         try {
-//             let url = p.url || `${p.base_url}${network.toLowerCase()}-new-transaction`;
-//             const payload = formatPayload(p.name, network, phone, plan_id, plan_volume_mb);
-
-//             const response = await axios.post(url, payload, {
-//                 headers: { 'Authorization': `Bearer ${p.key}`, 'token': `Bearer ${p.key}`, 'Content-Type': 'application/json' }
-//             });
-
-//             if (response.data && (response.data.status === 'success' || response.data.code === '0000' || response.data.message === '0000')) {
-//                 return { success: true, order_id: response.data.order_id || response.data.transaction_id, provider: p.name };
-//             }
-//         } catch (e) { continue; }
-//     }
-//     return { success: false, error: "All providers failed." };
-// }
 
 module.exports = { sendDataRoundRobin };
