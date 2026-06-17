@@ -408,6 +408,48 @@ app.post('/payment/webhook', async (req, res) => {
     res.sendStatus(200);
 });
 
+// --- 📡 IDATA REAL-TIME WEBHOOK ---
+app.post('/api/idata-webhook', async (req, res) => {
+    try {
+        const data = req.body;
+        console.log("--- 📡 WEBHOOK RECEIVED FROM iDATA ---");
+        console.log(`iData Order ${data.order_id} is now: ${data.status}`);
+
+        // We only care if it's completely finished or permanently failed
+        if (data.status === 'completed' || data.status === 'successful') {
+            await db.query(
+                "UPDATE transactions SET status = 'SUCCESS' WHERE provider_order_id = $1", 
+                [data.order_id.toString()]
+            );
+            console.log(`✅ iData Webhook: Transaction ${data.order_id} marked as SUCCESS.`);
+            
+        } else if (data.status === 'failed' || data.status === 'cancelled') {
+            // Update to failed and fetch the transaction details
+            const txRes = await db.query(
+                "UPDATE transactions SET status = 'FAILED' WHERE provider_order_id = $1 RETURNING *", 
+                [data.order_id.toString()]
+            );
+            
+            // Auto-Refund the user if it was an App or Bot Wallet purchase
+            if (txRes.rows.length > 0) {
+                const tx = txRes.rows[0];
+                if (tx.platform === 'APP' || tx.platform === 'WHATSAPP') {
+                    await db.query(
+                        "UPDATE users SET wallet_balance = wallet_balance + $1 WHERE phone_number = $2", 
+                        [tx.amount, tx.user_phone]
+                    );
+                    console.log(`❌ iData Webhook: Transaction ${tx.id} failed. Refunded GHS ${tx.amount} to ${tx.user_phone}.`);
+                }
+            }
+        }
+        
+        res.sendStatus(200); // Tell iData we received it successfully
+    } catch (err) {
+        console.error("🔴 iData Webhook Error:", err.message);
+        res.sendStatus(500);
+    }
+});
+
 // 8. ADMIN: REPORT A FAILED TRANSACTION
 app.post('/api/report-transaction', async (req, res) => {
     try {

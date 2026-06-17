@@ -117,7 +117,7 @@ async function executeProviderCall(provider, network, phone, plan_id, plan_volum
                 "network": net,
                 "beneficiary": phone,
                 "pa_data-bundle-packages": plan_id.toString(),
-                "webhook": "https://amg-data-api.duckdns.org/payment/webhook" 
+                "webhook": "https://amg-data-api.duckdns.org/api/idata-webhook"
             }, { headers: { 'Authorization': `Bearer ${provider.key}` } });
             
             return { success: res.data.status === 'success', provider: 'idata', order_id: res.data.order_id };
