@@ -55,28 +55,44 @@ async function _displayPlansForUser(sender, state) {
     return client.sendMessage(sender, planMenu);
 }
 
-// --- RESTORED: FORCE DIRECT STK PUSH (MOMO PROMPT) ---
+// FORCES DIRECT MOMO PROMPT (STK PUSH) ON PHONE
 const chargeMoMoDirect = async (phone, amount, network, metadata) => {
     try {
-        let provider = 'mtn';
-        if (network.includes('telecel') || network.includes('vod')) provider = 'vod';
-        if (network.includes('at') || network.includes('airtel')) provider = 'atl';
+        let net = network.toLowerCase();
+        let provider = 'mtn'; // Default
         
+        // Exact Paystack Ghana Provider Mappings
+        if (net.includes('telecel') || net.includes('vod')) {
+            provider = 'vod';
+        } else if (net.includes('at') || net.includes('airtel') || net.includes('tigo')) {
+            provider = 'tigo'; // 🛡️ FIXED: Paystack strictly requires 'tigo', not 'atl'
+        }
+
         let cleanPhone = phone.trim();
         if (cleanPhone.startsWith('233')) cleanPhone = '0' + cleanPhone.slice(3);
-        
+
+        console.log(`⚡ FORCING DIRECT STK PUSH: ${provider} on ${cleanPhone} for GHS ${amount}`);
+
         const response = await axios.post('https://api.paystack.co/charge', {
-            email: "customer@amgdata.com", 
+            email: "customer@amgdata.com",
             amount: Math.round(amount * 100), 
-            currency: "GHS", 
+            currency: "GHS",
             metadata: metadata,
-            mobile_money: { phone: cleanPhone, provider: provider }
-        }, { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`, 'Content-Type': 'application/json' } });
-        
+            mobile_money: {
+                phone: cleanPhone,
+                provider: provider
+            }
+        }, {
+            headers: { 
+                Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
         return response.data;
-    } catch (err) { 
-        console.error("🔴 STK Push Error:", err.response?.data || err.message);
-        return null; 
+    } catch (err) {
+        console.error("🔴 Paystack Charge API Error:", err.response?.data || err.message);
+        return null;
     }
 };
 
