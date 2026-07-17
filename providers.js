@@ -5,7 +5,7 @@ const { db } = require('./helpers');
 // --- TESTING OVERRIDE ---
 // Set to 'swiftdata', 'hubnet', or 'idata' to force testing a specific provider.
 // Leave as null for normal Load Balancing.
-const FORCE_PROVIDER = null; 
+const FORCE_PROVIDER = 'swiftdata'; 
 
 // --- PROVIDERS LIST ---
 const providers = [
@@ -41,10 +41,12 @@ async function sendDataRoundRobin(network, phone, plan_id, plan_volume_mb, swift
         if (result && result.success) return result;
 
         console.warn(`⚠️ ${provider.name} returned logical failure. Initiating failover...`);
-        return await tryFallback(network, phone, plan_id, plan_volume_mb, provider.name);
+        // FIXED: Added swiftdata_plan_id to the fallback call
+        return await tryFallback(network, phone, plan_id, plan_volume_mb, swiftdata_plan_id, provider.name);
     } catch (err) {
         console.error(`🔴 ${provider.name} crashed. Initiating failover...`);
-        return await tryFallback(network, phone, plan_id, plan_volume_mb, provider.name);
+        // FIXED: Added swiftdata_plan_id to the fallback call
+        return await tryFallback(network, phone, plan_id, plan_volume_mb, swiftdata_plan_id, provider.name);
     }
 }
 
@@ -74,7 +76,7 @@ async function executeProviderCall(provider, network, phone, plan_id, plan_volum
         try {
             const res = await axios.post(url, {
                 phone: phone, 
-                volume: plan_volume_mb.toString(), 
+                volume: (plan_volume_mb || 1000).toString(), 
                 reference: 'TCX-' + Date.now() 
             }, { headers: { 'token': `Bearer ${provider.key}`, 'Content-Type': 'application/json' } });
             
@@ -87,15 +89,19 @@ async function executeProviderCall(provider, network, phone, plan_id, plan_volum
     } else if (provider.name === 'swiftdata') {
         const idempotencyKey = 'SD-' + Date.now() + Math.floor(Math.random() * 1000);
         
+        // FIXED: ADDED DEBUG LOG AND ID EXTRACTION
+        const finalPackageId = swiftdata_plan_id || plan_id.toString();
+        console.log(`[DEBUG] Sending SwiftData Package ID: ${finalPackageId}`);
+
         try {
             const res = await axios.post(provider.url, {
-                // Use the new SwiftData ID. If it's null in DB, fallback to normal plan_id just in case
-                package_id: swiftdata_plan_id || plan_id.toString(), 
+                package_id: finalPackageId, 
                 phone: phone,
                 request_id: idempotencyKey
             }, { 
                 headers: { 
                     'Authorization': `Bearer ${provider.key}`,
+                    'X-API-Key': provider.key, // FIXED: Added missing X-API-Key header required by SwiftData docs
                     'X-Idempotency-Key': idempotencyKey,
                     'Content-Type': 'application/json'
                 } 
