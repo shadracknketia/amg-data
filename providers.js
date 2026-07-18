@@ -21,7 +21,7 @@ const providers = [
     },
     {
         name: 'swiftdata',
-        url: 'https://lsocdjpflecduumopijn.supabase.co/functions/v1/developer-api/payment/data',
+        url: 'https://ihrvvniomtoofrjkmalb.supabase.co/functions/v1/api/payment/data',
         key: process.env.SWIFTDATA_API_KEY
     }
 ];
