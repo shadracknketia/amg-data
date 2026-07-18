@@ -746,30 +746,49 @@ cron.schedule('*/30 * * * *', async () => {
             if (!tx.provider_order_id) continue; 
 
             try {
-                // Call iData's status checker (Added a 5-second timeout to prevent freezing)
-                const statusRes = await axios.get(`https://idatagh.com/wp-json/custom/v1/order-status?order_id=${tx.provider_order_id}`, {
-                    headers: { 'Authorization': `Bearer ${process.env.IDATA_API_KEY}`, 'Content-Type': 'application/json' },
-                    timeout: 5000 
-                });
+                // 🛡️ IDATA SYNC
+                if (tx.provider === 'idata') {
+                    const statusRes = await axios.get(`https://idatagh.com/wp-json/custom/v1/order-status?order_id=${tx.provider_order_id}`, {
+                        headers: { 'Authorization': `Bearer ${process.env.IDATA_API_KEY}` }, timeout: 5000 
+                    });
 
-                if (statusRes.data.status === 'success') {
-                    const orderStatus = statusRes.data.order_status; // e.g., 'Completed', 'Failed'
-                    
-                    if (orderStatus === 'Completed') {
-                        await db.query("UPDATE transactions SET status = 'SUCCESS' WHERE id = $1", [tx.id]);
-                        console.log(`✅ Sync: Transaction ${tx.id} marked as SUCCESS.`);
-                    } 
-                    else if (orderStatus === 'Failed') {
-                        await db.query("UPDATE transactions SET status = 'FAILED' WHERE id = $1", [tx.id]);
-                        // Refund ONLY if they used the App Wallet
-                        if (tx.platform === 'APP' || tx.platform === 'WHATSAPP') {
-                            await db.query("UPDATE users SET wallet_balance = wallet_balance + $1 WHERE phone_number = $2", [tx.amount, tx.user_phone]);
-                            console.log(`❌ Sync: Transaction ${tx.id} failed. Refunded GHS ${tx.amount}.`);
+                    if (statusRes.data.status === 'success') {
+                        const orderStatus = statusRes.data.order_status;
+                        if (orderStatus === 'Completed' || orderStatus === 'Successful') {
+                            await db.query("UPDATE transactions SET status = 'SUCCESS' WHERE id = $1", [tx.id]);
+                            console.log(`✅ Sync: iData Transaction ${tx.id} marked as SUCCESS.`);
+                        } else if (orderStatus === 'Failed' || orderStatus === 'Cancelled') {
+                            await db.query("UPDATE transactions SET status = 'FAILED' WHERE id = $1", [tx.id]);
+                            if (tx.platform === 'APP' || tx.platform === 'WHATSAPP') {
+                                await db.query("UPDATE users SET wallet_balance = wallet_balance + $1 WHERE phone_number = $2", [tx.amount, tx.user_phone]);
+                                console.log(`❌ Sync: iData Transaction ${tx.id} failed. Refunded GHS ${tx.amount}.`);
+                            }
+                        }
+                    }
+                } 
+                // 🛡️ NEW: SWIFTDATA SYNC
+                else if (tx.provider === 'swiftdata') {
+                    const statusRes = await axios.get(`https://ihrvvniomtoofrjkmalb.supabase.co/functions/v1/api/v1/orders/${tx.provider_order_id}`, {
+                        headers: { 'Authorization': `Bearer ${process.env.SWIFTDATA_API_KEY}` }, timeout: 5000 
+                    });
+
+                    if (statusRes.data.success) {
+                        const orderStatus = statusRes.data.order?.status; // 'pending', 'processing', 'completed', 'failed'
+                        if (orderStatus === 'completed') {
+                            await db.query("UPDATE transactions SET status = 'SUCCESS' WHERE id = $1", [tx.id]);
+                            console.log(`✅ Sync: SwiftData Transaction ${tx.id} marked as SUCCESS.`);
+                        } else if (orderStatus === 'failed') {
+                            await db.query("UPDATE transactions SET status = 'FAILED' WHERE id = $1", [tx.id]);
+                            if (tx.platform === 'APP' || tx.platform === 'WHATSAPP') {
+                                await db.query("UPDATE users SET wallet_balance = wallet_balance + $1 WHERE phone_number = $2", [tx.amount, tx.user_phone]);
+                                console.log(`❌ Sync: SwiftData Transaction ${tx.id} failed. Refunded GHS ${tx.amount}.`);
+                            }
                         }
                     }
                 }
+
             } catch (err) { 
-                console.error(`⚠️ Error syncing transaction ${tx.id}:`, err.message); 
+                console.error(`⚠️ Error syncing transaction ${tx.id} (${tx.provider}):`, err.message); 
             }
         }
 
