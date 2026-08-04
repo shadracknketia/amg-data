@@ -149,6 +149,34 @@ const client = new Client({
     }
 });
 
+// --- WHATSAPP STATUS TRACKERS ---
+client.on('loading_screen', (percent, message) => {
+    console.log(`⏳ LOADING WHATSAPP: ${percent}% - ${message}`);
+});
+
+client.on('qr', (qr) => {
+    console.log('\n✅ QR CODE RECEIVED! Scan it with your phone now:\n');
+    qrcode.generate(qr, { small: true });
+});
+
+client.on('authenticated', () => {
+    console.log('🔒 Authenticated successfully!');
+});
+
+client.on('auth_failure', (msg) => {
+    console.error('🔴 Authentication failed:', msg);
+});
+
+client.on('ready', () => {
+    console.log('🌟 AMG Bot is completely online and ready to read messages!');
+});
+
+client.on('disconnected', (reason) => {
+    console.error('🔴 Bot was disconnected:', reason);
+});
+
+// ⬆️⬆️ END OF STATUS TRACKERS ⬆️⬆️
+
 // --- MAIN MESSAGE LOGIC ---
 client.on('message', async (msg) => {
     try {
