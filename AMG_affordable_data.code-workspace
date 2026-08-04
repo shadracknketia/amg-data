@@ -2,6 +2,12 @@
 	"folders": [
 		{
 			"path": "."
+		},
+		{
+			"path": "../../../PROJECTS/WEBSITES/smartivate"
+		},
+		{
+			"path": "../../../PROJECTS/BulkGrab_Enterprise"
 		}
 	],
 	"settings": {}

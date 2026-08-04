@@ -3,7 +3,7 @@ const axios = require('axios');
 const { db } = require('./helpers');
 
 // --- TESTING OVERRIDE ---
-const FORCE_PROVIDER = 'swiftdata'; // Keep this as swiftdata to test the new API
+const FORCE_PROVIDER = null; // Keep this as swiftdata to test the new API
 
 // --- PROVIDERS LIST ---
 const providers = [

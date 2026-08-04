@@ -206,7 +206,7 @@ client.on('message', async (msg) => {
                 return client.sendMessage(sender, `📖 *How to Buy Data*\n\n1. Reply '1' to Buy.\n2. Choose network/bundle.\n3. Enter details.\n4. Authorize.\n\n*0* Menu`);
             } else if (userMessage === '4') {
                 await clearState(sender);
-                return client.sendMessage(sender, "📞 *AMG Support*\nNeed help? Contact *0539743087*.\n\n*0* Menu");
+                return client.sendMessage(sender, "📞 *AMG Support*\nNeed help? Contact *0278592168*.\n\n*0* Menu");
             }
         }
 
