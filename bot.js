@@ -135,7 +135,8 @@ const client = new Client({
     authStrategy: new LocalAuth({ clientId: "amg-bot-live" }),
     puppeteer: {
         headless: true, 
-        dumpio: true, // 🚨 THIS IS THE X-RAY. It will log everything the browser does.
+        // We can turn dumpio back to false now so your logs stay clean
+        dumpio: false, 
         args:[
             '--no-sandbox',
             '--disable-setuid-sandbox',
@@ -143,7 +144,6 @@ const client = new Client({
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
             '--no-zygote',
-            '--single-process', 
             '--disable-gpu'
         ],
     }
