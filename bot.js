@@ -129,12 +129,13 @@ const triggerMoMoFlow = async (sender, state) => {
     await clearState(sender);
 };
 
-// --- INITIALIZE WHATSAPP CLIENT ---
+console.log("🚀 Booting up WhatsApp Engine...");
+
 const client = new Client({
     authStrategy: new LocalAuth({ clientId: "amg-bot-live" }),
-    // REMOVED the old remotePath webVersionCache so it fetches the live version!
     puppeteer: {
         headless: true, 
+        dumpio: true, // 🚨 THIS IS THE X-RAY. It will log everything the browser does.
         args:[
             '--no-sandbox',
             '--disable-setuid-sandbox',
