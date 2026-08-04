@@ -559,7 +559,7 @@ app.post('/api/user/update-pin', async (req, res) => {
 // ==========================================
 app.get('/chat', (req, res) => {
     // Replace this with your exact live WhatsApp Bot number (must start with 233 and have NO '+')
-    const botNumber = "233539743087"; 
+    const botNumber = "233541828922"; 
     
     // Pre-fill the word 'Hi' so the user only has to click send [1]
     const prefilledMessage = encodeURIComponent("Hi"); 
