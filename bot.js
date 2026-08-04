@@ -129,13 +129,10 @@ const triggerMoMoFlow = async (sender, state) => {
     await clearState(sender);
 };
 
-// --- INITIALIZE WHATSAPP CLIENT (NATIVE VERSION) ---
+// --- INITIALIZE WHATSAPP CLIENT ---
 const client = new Client({
     authStrategy: new LocalAuth({ clientId: "amg-bot-live" }),
-    webVersionCache: {
-        type: 'remote',
-        remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version-checker/master/remote/2.2413.51-v2.html',
-    },
+    // REMOVED the old remotePath webVersionCache so it fetches the live version!
     puppeteer: {
         headless: true, 
         args:[
@@ -145,7 +142,7 @@ const client = new Client({
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
             '--no-zygote',
-            '--single-process', // Sometimes needed for low-memory VPS
+            '--single-process', 
             '--disable-gpu'
         ],
     }
