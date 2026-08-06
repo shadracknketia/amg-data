@@ -173,6 +173,15 @@ client.on('ready', () => {
 
 client.on('disconnected', (reason) => {
     console.error('🔴 Bot was disconnected:', reason);
+    
+    // 🛡️ AUTO-HEAL: If logged out, destroy the broken browser and let PM2 restart it fresh
+    if (reason === 'LOGOUT') {
+        console.log('🔄 Restarting Node process to clear broken browser cache...');
+        client.destroy().catch(() => {});
+        setTimeout(() => {
+            process.exit(1); // This kills the script. PM2 will instantly restart it cleanly!
+        }, 2000);
+    }
 });
 
 // ⬆️⬆️ END OF STATUS TRACKERS ⬆️⬆️
