@@ -7,135 +7,18 @@ const qrcode = require('qrcode-terminal');
 const axios = require('axios');
 const { sendDataRoundRobin } = require('./providers');
 const { db, getOrCreateUser } = require('./helpers');
-const { setState, getState, clearState, setLock, releaseLock, setRecipientCooldown} = require('./redisClient');
+const { setState, getState, clearState, setLock, releaseLock, setRecipientCooldown } = require('./redisClient');
 
 const lidCache = {};
 
-// --- HELPER FUNCTIONS ---
-async function resolveJidToPhone(sender) {
-    if (lidCache[sender]) return lidCache[sender];
-    let rawId = sender.split('@')[0];
-    if (sender.endsWith('@lid')) {
-        try {
-            const resolved = await client.getContactLidAndPhone([sender]);
-            if (resolved && resolved.length > 0 && resolved[0].pn) {
-                rawId = resolved[0].pn.split('@')[0];
-            }
-        } catch (err) { console.error("🔴 LID Error:", err.message); }
-    }
-    let cleanPhone = rawId.trim();
-    if (cleanPhone.startsWith('233')) cleanPhone = '0' + cleanPhone.slice(3);
-    lidCache[sender] = cleanPhone;
-    return cleanPhone;
-}
-
-function cleanPlanName(name) {
-    return name.replace(/\s*SMM\s*/gi, '').replace(/\s*Regular\s*/gi, '').trim();
-}
-
-async function _displayPlansForUser(sender, state) {
-    const { network, page = 0 } = state;
-    const itemsPerPage = 5;
-    const plans = await db.query(
-        'SELECT * FROM data_plans WHERE is_active = true AND network_name = $1 ORDER BY buying_price ASC', 
-        [network]
-    );
-    const startIndex = page * itemsPerPage;
-    const pageItems = plans.rows.slice(startIndex, startIndex + itemsPerPage);
-    const hasNextPage = plans.rows.length > (startIndex + itemsPerPage);
-    const hasPrevPage = page > 0;
-
-    let planMenu = `📊 *${network == 'AT' ? 'AirtelTigo' : network} Bundles* (Page ${page + 1})\n\n`;
-    pageItems.forEach((p, i) => {
-        planMenu += `*${i + 1}* - ${cleanPlanName(p.plan_name)} (GHS ${p.selling_price})\n`;
-    });
-    if (hasNextPage) planMenu += `*6.* ➡️ More\n`;
-    if (hasPrevPage) planMenu += `*7.* ⬅️ Previous\n`;
-    planMenu += `*0.* 🔙 Back`;
-    return client.sendMessage(sender, planMenu);
-}
-
-// FORCES DIRECT MOMO PROMPT (STK PUSH) ON PHONE
-const chargeMoMoDirect = async (phone, amount, network, metadata) => {
-    try {
-        let net = network.toLowerCase();
-        let provider = 'mtn'; // Default
-        
-        // Exact Paystack Ghana Provider Mappings
-        if (net.includes('telecel') || net.includes('vod')) {
-            provider = 'vod';
-        } else if (net.includes('at') || net.includes('airtel') || net.includes('tigo')) {
-            provider = 'tigo'; // 🛡️ FIXED: Paystack strictly requires 'tigo', not 'atl'
-        }
-
-        let cleanPhone = phone.trim();
-        if (cleanPhone.startsWith('233')) cleanPhone = '0' + cleanPhone.slice(3);
-
-        console.log(`⚡ FORCING DIRECT STK PUSH: ${provider} on ${cleanPhone} for GHS ${amount}`);
-
-        const response = await axios.post('https://api.paystack.co/charge', {
-            email: "customer@amgdata.com",
-            amount: Math.round(amount * 100), 
-            currency: "GHS",
-            metadata: metadata,
-            mobile_money: {
-                phone: cleanPhone,
-                provider: provider
-            }
-        }, {
-            headers: { 
-                Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
-                'Content-Type': 'application/json'
-            }
-        });
-
-        return response.data;
-    } catch (err) {
-        console.error("🔴 Paystack Charge API Error:", err.response?.data || err.message);
-        return null;
-    }
-};
-
-// --- UPDATED: TRIGGER FLOW ---
-const triggerMoMoFlow = async (sender, state) => {
-    const { plan, payer, recipient } = state;
-    await client.sendMessage(sender, `⏳ Requesting GHS ${plan.selling_price} from *${payer}*...`);
-    
-    const metadata = { type: 'DIRECT_PURCHASE', customer_phone: recipient, payer_phone: payer, plan_id: plan.idata_plan_id, network_id: plan.network_name.toLowerCase() };
-    
-    // 1. Generate Web Link Fallback
-    const pay = await axios.post('https://api.paystack.co/transaction/initialize', {
-        email: 'customer@amgdata.com', amount: Math.round(plan.selling_price * 100), currency: "GHS", metadata, channels: ['mobile_money', 'card']
-    }, { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` } }).catch(() => null);
-
-    const checkoutUrl = pay?.data?.data?.authorization_url || null;
-    let referenceToSave = pay?.data?.data?.reference || 'PROMPT_BUY';
-
-    // 2. Trigger the actual MoMo Prompt (STK Push)
-    const charge = await chargeMoMoDirect(payer, plan.selling_price, plan.network_name.toLowerCase(), metadata);
-    
-    // 3. Fix: We MUST save the STK Push reference so the Webhook finds it when the user approves on their phone
-    if (charge && charge.data && charge.data.reference) {
-        referenceToSave = charge.data.reference;
-    }
-
-    // 4. Save to Database
-    await db.query(
-        'INSERT INTO transactions (user_phone, recipient_phone, amount, network, data_volume, status, platform, reference, checkout_url, plan_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
-        [payer, recipient, plan.selling_price, plan.network_name, plan.plan_name, 'PROCESSING', 'WHATSAPP', referenceToSave, checkoutUrl, plan.id]
-    );
-    
-    await client.sendMessage(sender, `🔔 *Payment Instructions*\n1. Authorize the prompt on your phone.\n2. *MTN:* Dial *170# -> 6 -> 3* (Approvals) if no prompt appears.\n3. Or pay via web here: ${checkoutUrl || 'N/A'}`);
-    await clearState(sender);
-};
-
-console.log("🚀 Booting up WhatsApp Engine...");
+console.log("🚀 Booting up WhatsApp Engine (Stealth Mode)...");
 
 const client = new Client({
     authStrategy: new LocalAuth({ clientId: "amg-bot-live" }),
+    // 🛡️ ANTI-BAN 1: Force a real human User-Agent so Meta doesn't see "HeadlessChrome"
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     puppeteer: {
         headless: true, 
-        // We can turn dumpio back to false now so your logs stay clean
         dumpio: false, 
         args:[
             '--no-sandbox',
@@ -144,10 +27,32 @@ const client = new Client({
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
             '--no-zygote',
-            '--disable-gpu'
+            '--disable-gpu',
+            // 🛡️ ANTI-BAN 2: Hide the "Automation" flags from WhatsApp's security scanners
+            '--disable-blink-features=AutomationControlled' 
         ],
     }
 });
+
+// ==========================================
+// 🛡️ ANTI-BAN HUMANIZER FUNCTION
+// ==========================================
+async function sendHumanMessage(sender, text) {
+    try {
+        // 1. Get the chat
+        const chat = await client.getChatById(sender);
+        // 2. Show "typing..." indicator on user's phone
+        await chat.sendStateTyping();
+        // 3. Wait a random amount of time between 1.5 and 3 seconds
+        const delayMs = Math.floor(Math.random() * 1500) + 1500;
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+        // 4. Finally, send the message
+        return await client.sendMessage(sender, text);
+    } catch (err) {
+        // Fallback just in case
+        return await client.sendMessage(sender, text);
+    }
+}
 
 // --- WHATSAPP STATUS TRACKERS ---
 client.on('loading_screen', (percent, message) => {
@@ -173,37 +78,111 @@ client.on('ready', () => {
 
 client.on('disconnected', (reason) => {
     console.error('🔴 Bot was disconnected:', reason);
-    
-    // 🛡️ AUTO-HEAL: If logged out, destroy the broken browser and let PM2 restart it fresh
     if (reason === 'LOGOUT') {
         console.log('🔄 Restarting Node process to clear broken browser cache...');
         client.destroy().catch(() => {});
-        setTimeout(() => {
-            process.exit(1); // This kills the script. PM2 will instantly restart it cleanly!
-        }, 2000);
+        setTimeout(() => { process.exit(1); }, 2000);
     }
 });
 
-// ⬆️⬆️ END OF STATUS TRACKERS ⬆️⬆️
+// --- HELPER FUNCTIONS ---
+async function resolveJidToPhone(sender) {
+    if (lidCache[sender]) return lidCache[sender];
+    let rawId = sender.split('@')[0];
+    if (sender.endsWith('@lid')) {
+        try {
+            const resolved = await client.getContactLidAndPhone([sender]);
+            if (resolved && resolved.length > 0 && resolved[0].pn) rawId = resolved[0].pn.split('@')[0];
+        } catch (err) {}
+    }
+    let cleanPhone = rawId.trim();
+    if (cleanPhone.startsWith('233')) cleanPhone = '0' + cleanPhone.slice(3);
+    lidCache[sender] = cleanPhone;
+    return cleanPhone;
+}
 
-// --- MAIN MESSAGE LOGIC ---
+function cleanPlanName(name) {
+    return name.replace(/\s*SMM\s*/gi, '').replace(/\s*Regular\s*/gi, '').trim();
+}
+
+async function _displayPlansForUser(sender, state) {
+    const { network, page = 0 } = state;
+    const plans = await db.query('SELECT * FROM data_plans WHERE is_active = true AND network_name = $1 ORDER BY buying_price ASC', [network]);
+    const startIndex = page * 5;
+    const pageItems = plans.rows.slice(startIndex, startIndex + 5);
+    
+    let planMenu = `📊 *${network == 'AT' ? 'AirtelTigo' : network} Bundles* (Page ${page + 1})\n\n`;
+    pageItems.forEach((p, i) => {
+        planMenu += `*${i + 1}* - ${cleanPlanName(p.plan_name)} (GHS ${p.selling_price})\n`;
+    });
+    if (plans.rows.length > (startIndex + 5)) planMenu += `*6.* ➡️ More\n`;
+    if (page > 0) planMenu += `*7.* ⬅️ Previous\n`;
+    planMenu += `\n*#* Back  |  *0* Cancel`;
+    
+    return sendHumanMessage(sender, planMenu); // 🛡️ Humanized
+}
+
+const chargeMoMoDirect = async (phone, amount, network, metadata) => {
+    try {
+        let net = network.toLowerCase();
+        let provider = 'mtn'; 
+        if (net.includes('telecel') || net.includes('vod')) provider = 'vod';
+        else if (net.includes('at') || net.includes('airtel') || net.includes('tigo')) provider = 'tigo';
+
+        let cleanPhone = phone.trim();
+        if (cleanPhone.startsWith('233')) cleanPhone = '0' + cleanPhone.slice(3);
+
+        const response = await axios.post('https://api.paystack.co/charge', {
+            email: "customer@amgdata.com", amount: Math.round(amount * 100), currency: "GHS", metadata: metadata,
+            mobile_money: { phone: cleanPhone, provider: provider }
+        }, { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`, 'Content-Type': 'application/json' } });
+        return response.data;
+    } catch (err) { return null; }
+};
+
+const triggerMoMoFlow = async (sender, state) => {
+    const { plan, payer, recipient } = state;
+    await sendHumanMessage(sender, `⏳ Requesting GHS ${plan.selling_price} from *${payer}*...`); // 🛡️ Humanized
+    
+    const metadata = { type: 'DIRECT_PURCHASE', customer_phone: recipient, payer_phone: payer, plan_id: plan.idata_plan_id, network_id: plan.network_name.toLowerCase() };
+    
+    const pay = await axios.post('https://api.paystack.co/transaction/initialize', {
+        email: 'customer@amgdata.com', amount: Math.round(plan.selling_price * 100), currency: "GHS", metadata, channels: ['mobile_money', 'card']
+    }, { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` } }).catch(() => null);
+
+    const checkoutUrl = pay?.data?.data?.authorization_url || null;
+    let referenceToSave = pay?.data?.data?.reference || 'PROMPT_BUY';
+
+    const charge = await chargeMoMoDirect(payer, plan.selling_price, plan.network_name.toLowerCase(), metadata);
+    if (charge && charge.data && charge.data.reference) referenceToSave = charge.data.reference;
+
+    await db.query(
+        'INSERT INTO transactions (user_phone, recipient_phone, amount, network, data_volume, status, platform, reference, checkout_url, plan_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
+        [payer, recipient, plan.selling_price, plan.network_name, plan.plan_name, 'PROCESSING', 'WHATSAPP', referenceToSave, checkoutUrl, plan.id]
+    );
+    
+    await sendHumanMessage(sender, `🔔 *Payment Instructions*\n1. Authorize the prompt on your phone.\n2. *MTN:* Dial *170# -> 6 -> 3* (Approvals) if no prompt appears.\n3. Or pay via web here: ${checkoutUrl || 'N/A'}`); // 🛡️ Humanized
+    await clearState(sender);
+};
+
+// ==========================================
+//        MAIN MESSAGE LOGIC
+// ==========================================
 client.on('message', async (msg) => {
     try {
         const sender = msg.from;
         const userMessage = msg.body.trim();
         const formattedSender = await resolveJidToPhone(sender);
         
-        // 1. Fetch the state from Redis
         let state = await getState(sender);
 
-        // 👑 THE KING: Global Reset/Cancel
-        // This MUST be checked before ANY step-specific logic
+        // 👑 GLOBAL RESET
         if (state && ['0', 'cancel', 'reset', 'menu'].includes(userMessage.toLowerCase())) {
             await clearState(sender);
-            return client.sendMessage(sender, "🚫 *Transaction Cancelled.*\n\nReply *1* to see the Main Menu.");
+            return sendHumanMessage(sender, "🚫 *Transaction Cancelled.*\n\nReply *1* to see the Main Menu."); // 🛡️ Humanized
         }
 
-        // 3. INITIAL WELCOME
+        // --- INITIAL WELCOME ---
         if (!state) {
             if (['0', 'reset', 'menu', 'cancel'].includes(userMessage.toLowerCase())) return;
 
@@ -211,6 +190,7 @@ client.on('message', async (msg) => {
             await setState(sender, state);
             
             let welcome = `🌟 *Welcome to AMG Affordable Data* 🌟\n\n`;
+            welcome += `📌 *Please save this number as "AMG Data" to ensure fast delivery and avoid network blocks.*\n\n`;
             welcome += `1. 🛒 Buy Data\n`;
             welcome += `2. 💰 Check Wallet Balance\n`;
             welcome += `3. 📖 Instructions\n`;
@@ -218,7 +198,7 @@ client.on('message', async (msg) => {
             welcome += `📲 *Download our Mobile App*:\nhttps://amg-data-api.duckdns.org/download-app\n\n`;
             welcome += `*Reply with a number (1, 2, 3, or 4):*`;
             
-            return client.sendMessage(sender, welcome);
+            return sendHumanMessage(sender, welcome); // 🛡️ Humanized
         }
 
         // --- STEP 1: MAIN MENU ---
@@ -226,22 +206,20 @@ client.on('message', async (msg) => {
             if (userMessage === '1') {
                 state.step = 'SELECTING_NETWORK';
                 await setState(sender, state);
-                return client.sendMessage(sender, `📊 *Select Network*\n\n1. MTN\n2. Telecel\n3. AirtelTigo\n\n*0* Cancel`);
+                return sendHumanMessage(sender, `📊 *Select Network*\n\n1. MTN\n2. Telecel\n3. AirtelTigo\n\n*0* Cancel`);
             } else if (userMessage === '2') {
                 const userRes = await db.query('SELECT * FROM users WHERE phone_number = $1', [formattedSender]);
-                if (userRes.rows.length === 0 || !userRes.rows[0].pin) {
-                    await clearState(sender);
-                    return client.sendMessage(sender, `❌ *No Wallet Found*\n\nPlease download our *Mobile App* to create an account.\n\n*0* Menu`);
-                }
-                const user = userRes.rows[0];
                 await clearState(sender);
-                return client.sendMessage(sender, `💰 *AMG Wallet Balance*\n\nAccount: *${formattedSender}*\nBalance: *GHS ${user.wallet_balance}*\n\n*0* Menu`);
+                if (userRes.rows.length === 0 || !userRes.rows[0].pin) {
+                    return sendHumanMessage(sender, `❌ *No Wallet Found*\n\nPlease download our *Mobile App* to create an account.\n\n*0* Menu`);
+                }
+                return sendHumanMessage(sender, `💰 *AMG Wallet Balance*\n\nAccount: *${formattedSender}*\nBalance: *GHS ${userRes.rows[0].wallet_balance}*\n\n*0* Menu`);
             } else if (userMessage === '3') {
                 await clearState(sender);
-                return client.sendMessage(sender, `📖 *How to Buy Data*\n\n1. Reply '1' to Buy.\n2. Choose network/bundle.\n3. Enter details.\n4. Authorize.\n\n*0* Menu`);
+                return sendHumanMessage(sender, `📖 *How to Buy Data*\n\n1. Reply '1' to Buy.\n2. Choose network/bundle.\n3. Enter details.\n4. Authorize.\n\n*0* Menu`);
             } else if (userMessage === '4') {
                 await clearState(sender);
-                return client.sendMessage(sender, "📞 *AMG Support*\nNeed help? Contact *0278592168*.\n\n*0* Menu");
+                return sendHumanMessage(sender, "📞 *AMG Support*\nNeed help? Contact *0539743087*.\n\n*0* Menu");
             }
         }
 
@@ -250,7 +228,7 @@ client.on('message', async (msg) => {
             if (userMessage === '#') {
                 state.step = 'MAIN_MENU';
                 await setState(sender, state);
-                return client.sendMessage(sender, `🌟 *Welcome to AMG Affordable Data* 🌟\n\n1. 🛒 Buy Data\n2. 💰 Check Wallet Balance\n3. 📖 Instructions\n4. 📞 Support\n\n*Reply with a number:*`);
+                return sendHumanMessage(sender, `🌟 *Welcome to AMG Affordable Data* 🌟\n\n1. 🛒 Buy Data\n2. 💰 Check Wallet Balance\n3. 📖 Instructions\n4. 📞 Support\n\n*Reply with a number:*`);
             }
 
             const netMap = { '1': 'MTN', '2': 'Telecel', '3': 'AT' };
@@ -268,7 +246,7 @@ client.on('message', async (msg) => {
             if (userMessage === '#') {
                 state.step = 'SELECTING_NETWORK';
                 await setState(sender, state);
-                return client.sendMessage(sender, `📊 *Select Network*\n\n1. MTN\n2. Telecel\n3. AirtelTigo\n\n*#* Back  |  *0* Cancel`);
+                return sendHumanMessage(sender, `📊 *Select Network*\n\n1. MTN\n2. Telecel\n3. AirtelTigo\n\n*#* Back  |  *0* Cancel`);
             }
 
             const choice = parseInt(userMessage);
@@ -282,7 +260,7 @@ client.on('message', async (msg) => {
                 state.plan = pageItems[choice - 1];
                 state.step = 'ENTERING_RECIPIENT';
                 await setState(sender, state);
-                return client.sendMessage(sender, `✅ Selected: *${cleanPlanName(state.plan.plan_name)}*\n\nWhich number should *RECEIVE* the data?\n\n*1.* My number (${formattedSender})\n*OR* Type the 10-digit number:\n\n*#* Back  |  *0* Cancel`);
+                return sendHumanMessage(sender, `✅ Selected: *${cleanPlanName(state.plan.plan_name)}*\n\nWhich number should *RECEIVE* the data?\n\n*1.* My number (${formattedSender})\n*OR* Type the 10-digit number:\n\n*#* Back  |  *0* Cancel`);
             }
         }
 
@@ -297,9 +275,7 @@ client.on('message', async (msg) => {
             state.recipient = userMessage === '1' ? formattedSender : userMessage;
             state.step = 'ENTERING_PAYER';
             await setState(sender, state);
-            
-            // FIXED TEXT HERE:
-            return client.sendMessage(sender, `📱 Data for: *${state.recipient}*\n\nWhich number is *PAYING*?\n\n*1.* My number (${formattedSender})\n*OR* Type the MoMo number:\n\n*#* Back  |  *0* Cancel`);
+            return sendHumanMessage(sender, `📱 Data for: *${state.recipient}*\n\nWhich number is *PAYING*?\n\n*1.* My number (${formattedSender})\n*OR* Type the MoMo number:\n\n*#* Back  |  *0* Cancel`);
         }
 
         // --- STEP 5: ENTERING PAYER ---
@@ -307,7 +283,7 @@ client.on('message', async (msg) => {
             if (userMessage === '#') {
                 state.step = 'ENTERING_RECIPIENT';
                 await setState(sender, state);
-                return client.sendMessage(sender, `✅ Selected: *${cleanPlanName(state.plan.plan_name)}*\n\nWhich number should *RECEIVE* the data?\n\n*1.* My number (${formattedSender})\n*OR* Type the 10-digit number:\n\n*#* Back  |  *0* Cancel`);
+                return sendHumanMessage(sender, `✅ Selected: *${cleanPlanName(state.plan.plan_name)}*\n\nWhich number should *RECEIVE* the data?\n\n*1.* My number (${formattedSender})\n*OR* Type the 10-digit number:\n\n*#* Back  |  *0* Cancel`);
             }
 
             let payer = userMessage === '1' ? formattedSender : userMessage;
@@ -336,7 +312,7 @@ client.on('message', async (msg) => {
                 summary += `*1.* 💳 Pay with MoMo Prompt\n`;
             }
             
-            return client.sendMessage(sender, summary + `\n*#* Back  |  *0* Cancel`);
+            return sendHumanMessage(sender, summary + `\n*#* Back  |  *0* Cancel`);
         }
 
         // --- STEP 6: CONFIRMING ORDER ---
@@ -344,15 +320,13 @@ client.on('message', async (msg) => {
             if (userMessage === '#') {
                 state.step = 'ENTERING_PAYER';
                 await setState(sender, state);
-                
-                // FIXED TEXT HERE:
-                return client.sendMessage(sender, `📱 Data for: *${state.recipient}*\n\nWhich number is *PAYING*?\n\n*1.* My number (${formattedSender})\n*OR* Type the MoMo number:\n\n*#* Back  |  *0* Cancel`);
+                return sendHumanMessage(sender, `📱 Data for: *${state.recipient}*\n\nWhich number is *PAYING*?\n\n*1.* My number (${formattedSender})\n*OR* Type the MoMo number:\n\n*#* Back  |  *0* Cancel`);
             }
 
             if (userMessage === '1' && state.hasEnoughBalance) {
                 state.step = 'VERIFYING_PIN';
                 await setState(sender, state);
-                return client.sendMessage(sender, `🔒 *Security Check*\nEnter your 4-digit AMG PIN:\n\n*#* Back  |  *0* Cancel`);
+                return sendHumanMessage(sender, `🔒 *Security Check*\nEnter your 4-digit AMG PIN:\n\n*#* Back  |  *0* Cancel`);
             } else {
                 await triggerMoMoFlow(sender, state);
             }
@@ -360,15 +334,11 @@ client.on('message', async (msg) => {
 
         // --- STEP 7: VERIFYING PIN ---
         if (state.step === 'VERIFYING_PIN') {
-            
-            // 🛡️ SANITY GUARD: If plan is missing, don't crash, just reset.
             if (!state.plan || !state.plan.selling_price) {
-                console.error(`⚠️ Data loss detected for ${sender}. Resetting state.`);
                 await clearState(sender);
-                return client.sendMessage(sender, "❌ *Session Error:* Order details were lost. Please start again by replying *1*.");
+                return sendHumanMessage(sender, "❌ *Session Error:* Order details were lost. Please start again by replying *1*.");
             }
 
-            // Handle Back Button
             if (userMessage === '#') {
                 state.step = 'CONFIRMING_ORDER';
                 await setState(sender, state);
@@ -377,68 +347,54 @@ client.on('message', async (msg) => {
                 const balance = parseFloat(user.wallet_balance || 0);
                 
                 let summary = `📝 *Summary*\n📦 *Bundle:* ${state.plan.network_name} ${state.plan.plan_name}\n📱 *Recipient:* ${state.recipient}\n💳 *Payer:* ${state.payer}\n💰 *Cost:* GHS ${state.plan.selling_price}\n\n`;
-                if (state.hasEnoughBalance) {
-                    summary += `*1.* ✅ Pay with AMG Wallet (GHS ${balance.toFixed(2)})\n*2.* 💳 Pay with MoMo Prompt\n`;
-                } else {
-                    summary += `*1.* 💳 Pay with MoMo Prompt\n`;
-                }
-                return client.sendMessage(sender, summary + `\n*#* Back  |  *0* Cancel`);
+                if (state.hasEnoughBalance) summary += `*1.* ✅ Pay with AMG Wallet (GHS ${balance.toFixed(2)})\n*2.* 💳 Pay with MoMo Prompt\n`;
+                else summary += `*1.* 💳 Pay with MoMo Prompt\n`;
+                
+                return sendHumanMessage(sender, summary + `\n*#* Back  |  *0* Cancel`);
             }
 
-            // 🛡️ SPAM LOCK: Prevent double-taps
             const hasLock = await setLock(sender, 20);
-            if (!hasLock) return client.sendMessage(sender, "⏳ Please wait... processing.");
+            if (!hasLock) return sendHumanMessage(sender, "⏳ Please wait... processing.");
 
             try {
                 const user = await getOrCreateUser(formattedSender);
                 
                 if (user.pin === userMessage) {
-                    // Check Cooldown
                     const canProceed = await setRecipientCooldown(state.recipient, 5);
                     if (!canProceed) {
                         await clearState(sender);
-                        return client.sendMessage(sender, `⏳ *Telco Spam Protection Active*\n\nPlease wait *5 minutes* before sending another bundle to *${state.recipient}*.\n\nYour wallet has *NOT* been deducted.`);
+                        return sendHumanMessage(sender, `⏳ *Telco Spam Protection Active*\n\nPlease wait *5 minutes* before sending another bundle to *${state.recipient}*.\n\nYour wallet has *NOT* been deducted.`);
                     }
 
-                    // 💰 Deduct Wallet
                     await db.query('UPDATE users SET wallet_balance = wallet_balance - $1 WHERE phone_number = $2', [state.plan.selling_price, formattedSender]);
                     
-                    // 📡 Call Provider
-                    const res = await sendDataRoundRobin(
-                        state.plan.network_name.toLowerCase(), 
-                        state.recipient, 
-                        state.plan.idata_plan_id, 
-                        state.plan.size_mb,
-                        state.plan.swiftdata_plan_id
-                    );
+                    const res = await sendDataRoundRobin(state.plan.network_name.toLowerCase(), state.recipient, state.plan.idata_plan_id, state.plan.size_mb, state.plan.swiftdata_plan_id);
                     
                     if (res.success) {
                         await db.query(
                             'INSERT INTO transactions (user_phone, recipient_phone, amount, network, data_volume, status, platform, provider, provider_order_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
                             [formattedSender, state.recipient, state.plan.selling_price, state.plan.network_name, state.plan.plan_name, 'PROCESSING', 'WHATSAPP', res.provider, res.order_id]
                         );
-                        client.sendMessage(sender, `✅ *Success!* Order sent to provider.`);
+                        sendHumanMessage(sender, `✅ *Success!* Order sent to provider.`);
                     } else {
-                        // Refund
                         await db.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE phone_number = $2', [state.plan.selling_price, formattedSender]);
                         
                         let errorMessage = "Delivery failed.";
                         const apiError = (res.error || "").toLowerCase();
-                        if (apiError.includes('balance') || apiError.includes('fund')) {
-                            errorMessage = "Network nodes are currently busy.";
-                        }
-                        client.sendMessage(sender, `⚠️ *${errorMessage}*\n\nYour GHS ${state.plan.selling_price} was refunded.`);
+                        if (apiError.includes('balance') || apiError.includes('fund')) errorMessage = "Network nodes are currently busy.";
+                        
+                        sendHumanMessage(sender, `⚠️ *${errorMessage}*\n\nYour GHS ${state.plan.selling_price} was refunded.`);
                     }
                 } else {
-                    client.sendMessage(sender, "❌ Incorrect PIN.");
+                    sendHumanMessage(sender, "❌ Incorrect PIN.");
                 }
                 
-                await clearState(sender); // End session
+                await clearState(sender);
 
             } finally {
-                await releaseLock(sender); // Always release lock
+                await releaseLock(sender); 
             }
-            return; // Exit listener for this message
+            return; 
         }
 
     } catch (err) {
