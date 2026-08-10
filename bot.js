@@ -46,11 +46,12 @@ async function sendHumanMessage(sender, text) {
         // 3. Wait a random amount of time between 1.5 and 3 seconds
         const delayMs = Math.floor(Math.random() * 1500) + 1500;
         await new Promise(resolve => setTimeout(resolve, delayMs));
-        // 4. Finally, send the message
-        return await client.sendMessage(sender, text);
+        
+        // 4. Send the message WITH LINK PREVIEWS DISABLED 🛡️
+        return await client.sendMessage(sender, text, { linkPreview: false });
     } catch (err) {
         // Fallback just in case
-        return await client.sendMessage(sender, text);
+        return await client.sendMessage(sender, text, { linkPreview: false });
     }
 }
 
@@ -195,7 +196,6 @@ client.on('message', async (msg) => {
             welcome += `2. 💰 Check Wallet Balance\n`;
             welcome += `3. 📖 Instructions\n`;
             welcome += `4. 📞 Support\n\n`;
-            welcome += `📲 *Download our Mobile App*:\nhttps://amg-data-api.duckdns.org/download-app\n\n`;
             welcome += `*Reply with a number (1, 2, 3, or 4):*`;
             
             return sendHumanMessage(sender, welcome); // 🛡️ Humanized
@@ -375,8 +375,15 @@ client.on('message', async (msg) => {
                             'INSERT INTO transactions (user_phone, recipient_phone, amount, network, data_volume, status, platform, provider, provider_order_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
                             [formattedSender, state.recipient, state.plan.selling_price, state.plan.network_name, state.plan.plan_name, 'PROCESSING', 'WHATSAPP', res.provider, res.order_id]
                         );
-                        sendHumanMessage(sender, `✅ *Success!* Order sent to provider.`);
+                        
+                        // 🛡️ Safe Link Injection: Sent only after high trust interaction
+                        let successMsg = `✅ *Success!* Order sent to provider.\n\n`;
+                        successMsg += `📲 *Want faster payments & history tracking?*\n`;
+                        successMsg += `Download our App: amg-data-api.duckdns.org/download-app`;
+                        
+                        sendHumanMessage(sender, successMsg);
                     } else {
+                        
                         await db.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE phone_number = $2', [state.plan.selling_price, formattedSender]);
                         
                         let errorMessage = "Delivery failed.";

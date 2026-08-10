@@ -3,7 +3,9 @@ const axios = require('axios');
 const { db } = require('./helpers');
 
 // --- TESTING OVERRIDE ---
-const FORCE_PROVIDER = 'idata'; // Keep this as swiftdata to test the new API
+// Set to 'swiftdata', 'hubnet', or 'idata' to force testing a specific provider.
+// Leave as null for normal Load Balancing.
+const FORCE_PROVIDER = 'idata'; // ✅ FIXED: Set to null to activate Round-Robin!
 
 // --- PROVIDERS LIST ---
 const providers = [
@@ -68,7 +70,10 @@ async function executeProviderCall(provider, network, phone, plan_id, plan_volum
                 phone: phone, volume: (plan_volume_mb || 1000).toString(), reference: 'TCX-' + Date.now() 
             }, { headers: { 'token': `Bearer ${provider.key}`, 'Content-Type': 'application/json' } });
             return { success: res.data.message === '0000', provider: 'hubnet', order_id: res.data.transaction_id };
-        } catch (err) { throw err; }
+        } catch (err) { 
+            console.error(`[HUBNET ERROR]`, err.response?.data || err.message); // ✅ Added detailed logging
+            throw err; 
+        }
 
     } else if (provider.name === 'swiftdata') {
         // 🔄 NEW: SwiftData Logic
@@ -113,7 +118,10 @@ async function executeProviderCall(provider, network, phone, plan_id, plan_volum
                 "network": net, "beneficiary": phone, "pa_data-bundle-packages": plan_id.toString(), "webhook": "https://amg-data-api.duckdns.org/api/idata-webhook" 
             }, { headers: { 'Authorization': `Bearer ${provider.key}` } });
             return { success: res.data.status === 'success', provider: 'idata', order_id: res.data.order_id };
-        } catch (err) { throw err; }
+        } catch (err) { 
+            console.error(`[IDATA ERROR]`, err.response?.data || err.message); // ✅ Added detailed logging
+            throw err; 
+        }
     }
 }
 

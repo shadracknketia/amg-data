@@ -4,18 +4,15 @@ const bodyParser = require('body-parser');
 const axios = require('axios');
 const cors = require('cors');
 const { Pool } = require('pg');
-const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
 const crypto = require('crypto');
 const { sendDataRoundRobin } = require('./providers'); // Rotating providers engine
 const cron = require('node-cron'); 
 const { db, getOrCreateUser } = require('./helpers');
-const { setState, getState, clearState, setRecipientCooldown } = require('./redisClient');
+const { setState, getState, clearState, setRecipientCooldown, setLock, releaseLock } = require('./redisClient');
 
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
-const userStates = {}; 
 
 // Logger Middleware for absolute visibility
 app.use((req, res, next) => {
@@ -81,34 +78,6 @@ const chargeMoMoDirect = async (phone, amount, network, metadata) => {
         console.error("🔴 Paystack Charge API Error:", err.response?.data || err.message);
         return null;
     }
-};
-
-const triggerMoMoFlow = async (sender, state) => {
-    const plan = state.plan;
-    await client.sendMessage(sender, `⏳ Requesting GHS ${plan.selling_price} from *${state.payer}*...`);
-    
-    const metadata = { 
-        type: 'DIRECT_PURCHASE', 
-        customer_phone: state.recipient, 
-        payer_phone: state.payer, 
-        plan_id: plan.idata_plan_id, 
-        network_id: plan.network_name.toLowerCase() 
-    };
-    
-    const pay = await startPaystackPayment('customer@amgdata.com', plan.selling_price, metadata);
-
-    if (pay && pay.status) {
-        // --- 🧾 FIXED: WE NOW SAVE THE PROCESSING ROW FROM WHATSAPP ---
-        await db.query(
-            'INSERT INTO transactions (user_phone, amount, network, data_volume, status, platform, reference, checkout_url, plan_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
-            [state.payer, plan.selling_price, plan.network_name, plan.plan_name, 'PROCESSING', 'WHATSAPP', pay.data.reference, pay.data.authorization_url, plan.id]
-        );
-
-        await client.sendMessage(sender, `🔔 *Payment Instructions*\n1. Authorize on your phone.\n2. *MTN:* Dial *170# -> 6 -> 10 if no prompt.\n3. Or pay here: ${pay.data.authorization_url}`);
-    } else {
-        await client.sendMessage(sender, "❌ Payment system down. Try later.");
-    }
-    await clearState(sender);
 };
 
 // ==========================================
@@ -242,13 +211,17 @@ app.post('/api/purchase-wallet', async (req, res) => {
         const { plan_id, recipient, phone: userPhone } = req.body;
         phone = userPhone;
 
-        // 🛡️ NEW: TELCO SPAM PROTECTION FOR APP
+        // 🛡️ 1. ACCOUNT LOCK: Prevent double-spend race conditions
+        const hasLock = await setLock(`app_wallet_${phone}`, 15);
+        if (!hasLock) {
+            return res.status(429).json({ success: false, message: "Please wait... previous transaction is processing." });
+        }
+
+        // 🛡️ 2. RECIPIENT COOLDOWN
         const canProceed = await setRecipientCooldown(recipient, 5);
         if (!canProceed) {
-            return res.status(400).json({ 
-                success: false, 
-                message: "Spam Protection: Please wait 5 minutes before sending data to this specific number again to prevent network failure." 
-            });
+            await releaseLock(`app_wallet_${phone}`); // Always release lock!
+            return res.status(400).json({ success: false, message: "Spam Protection: Wait 5 minutes before sending to this number again." });
         }
 
         const planRes = await db.query('SELECT * FROM data_plans WHERE idata_plan_id = $1', [plan_id]);
@@ -293,6 +266,9 @@ app.post('/api/purchase-wallet', async (req, res) => {
             await db.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE phone_number = $2', [cost, phone]);
         }
         res.status(500).json({ success: false, message: err.message || "Transaction failed. Wallet refunded." });
+    } finally {
+        // 🔓 ALWAYS release the lock so the user isn't stuck forever
+        if (phone) await releaseLock(`app_wallet_${phone}`);
     }
 });
 
@@ -380,16 +356,23 @@ app.post('/payment/webhook', async (req, res) => {
             console.log(`✅ WALLET UPDATED! New Balance: GHS ${update.rows[0].wallet_balance}`);
             
         } else if (metadata.type === 'DIRECT_PURCHASE') {
-            console.log(`Direct Purchase: Sending Plan to ${phone}...`);
+            console.log(`Direct Purchase: Verifying Status for ${phone}...`);
             
             try {
-                // Fetch the full plan details from the database so we have size_mb and swiftdata_plan_id
+                // 🛡️ CRITICAL FIX: Check if we ALREADY processed this webhook!
+                const txCheck = await db.query('SELECT status FROM transactions WHERE reference = $1', [reference]);
+                if (txCheck.rows.length > 0 && txCheck.rows[0].status !== 'PROCESSING') {
+                    console.log(`⚠️ Webhook ignored: Transaction ${reference} is already ${txCheck.rows[0].status}`);
+                    return res.sendStatus(200); // Stop here, already processed!
+                }
+
+                // Fetch the full plan details from the database
                 const planRes = await db.query('SELECT * FROM data_plans WHERE idata_plan_id = $1', [metadata.plan_id]);
                 
                 if (planRes.rows.length > 0) {
                     const plan = planRes.rows[0];
                     
-                    // Fulfill the order with ALL 5 parameters
+                    // Fulfill the order
                     const result = await sendDataRoundRobin(
                         metadata.network_id.toLowerCase(), 
                         phone, 
@@ -814,25 +797,6 @@ cron.schedule('*/30 * * * *', async () => {
 
     } catch (err) { 
         console.error("🔴 Cron Database Error:", err.message); 
-    }
-});
-
-// TEST A SPECIFIC PROVIDER INDEPENDENTLY
-app.get('/api/admin/test-provider', async (req, res) => {
-    try {
-        const { provider, network, phone, plan_id } = req.query;
-        const { sendDataToProvider } = require('./providers'); // Make sure you export this in providers.js
-
-        console.log(`🧪 Testing Provider: ${provider} for ${phone}`);
-        const result = await sendDataToProvider(provider, network, phone, plan_id);
-
-        res.json({
-            success: result.success,
-            provider: provider,
-            response: result.data || result.error
-        });
-    } catch (err) {
-        res.status(500).json({ success: false, error: err.message });
     }
 });
 
