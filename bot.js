@@ -171,6 +171,19 @@ const triggerMoMoFlow = async (sender, state) => {
 // ==========================================
 client.on('message', async (msg) => {
     try {
+
+        // 🛡️ ANTI-GHOST FIX: Ignore messages older than 2 minutes
+        const now = Math.floor(Date.now() / 1000);
+        if (msg.timestamp < now - 120) {
+            console.log(`[IGNORE] Skipped old history message.`);
+            return;
+        }
+
+        // 🛡️ IGNORE GROUPS & STATUS UPDATES
+        if (msg.from === 'status@broadcast' || msg.from.includes('@g.us')) {
+            return;
+        }
+
         const sender = msg.from;
         const userMessage = msg.body.trim();
         const formattedSender = await resolveJidToPhone(sender);
@@ -383,7 +396,7 @@ client.on('message', async (msg) => {
                         
                         sendHumanMessage(sender, successMsg);
                     } else {
-                        
+
                         await db.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE phone_number = $2', [state.plan.selling_price, formattedSender]);
                         
                         let errorMessage = "Delivery failed.";
